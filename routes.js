@@ -389,7 +389,7 @@ router.post('/dashboard', async (req, res) => {
 
         // Constrói a consulta principal
         const { whereSql, joinSql, params } = buildWhereClause(filters); 
-        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento' };
+        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento', 'Informação': 'informacao' };
         const valueField = valueTypeMap[filters.valueType] || 'provento';
 
         // ATUALIZADO: Seleciona e agrupa por cc_map.cc_pai_nome
@@ -462,7 +462,7 @@ router.post('/reports', async (req, res) => {
     try {
         // Constrói a consulta principal de agregação
         const { whereSql, joinSql, params } = buildWhereClause(filters);
-        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento' };
+        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento', 'Informação': 'informacao' };
         const valueField = valueTypeMap[filters.valueType] || 'provento';
 
         // ATUALIZADO: Seleciona e agrupa por cc_map.cc_pai_nome
@@ -479,6 +479,7 @@ router.post('/reports', async (req, res) => {
                 SUM(f.provento) as total_proventos,
                 SUM(f.desconto) as total_descontos,
                 SUM(f.liquido) as total_liquido,
+                SUM(f.informacao) as total_informacao,
                 SUM(f.${valueField}) as total_valor_filtrado
             FROM gold.f_fortes_pagamento f
             ${joinSql}
@@ -526,12 +527,13 @@ router.post('/reports', async (req, res) => {
             if (!byEventsByTypeAndLotation[event][payrollType]) byEventsByTypeAndLotation[event][payrollType] = {};
             if (!byEventsByTypeAndLotation[event][payrollType][lotacaoId]) { 
                 byEventsByTypeAndLotation[event][payrollType][lotacaoId] = {
-                    totalProventos: 0, totalDescontos: 0, totalLiquido: 0
+                    totalProventos: 0, totalDescontos: 0, totalLiquido: 0, totalInformacao: 0 
                 };
             }
             byEventsByTypeAndLotation[event][payrollType][lotacaoId].totalProventos += parseFloat(row.total_proventos) || 0;
             byEventsByTypeAndLotation[event][payrollType][lotacaoId].totalDescontos += parseFloat(row.total_descontos) || 0;
             byEventsByTypeAndLotation[event][payrollType][lotacaoId].totalLiquido += parseFloat(row.total_liquido) || 0;
+            byEventsByTypeAndLotation[event][payrollType][lotacaoId].totalInformacao += parseFloat(row.total_informacao) || 0;
 
             if (year) {
                 if (!byValuesOverYear[year]) byValuesOverYear[year] = { proventos: 0, descontos: 0, liquido: 0 };
@@ -718,7 +720,7 @@ router.post('/reports/comparison', async (req, res) => {
         const processPeriod = async (period) => {
             const periodFilters = { ...filters, year: period.year, month: period.month };
             const { whereSql, joinSql, params } = buildWhereClause(periodFilters); 
-            const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento' };
+            const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento', 'Informação': 'informacao' };
             const valueField = valueTypeMap[filters.valueType] || 'provento';
             
             const sql = `
@@ -878,7 +880,7 @@ router.post('/reports/lotacao-colaborador-eventos', async (req, res) => {
     const filters = req.body;
     try {
         const { whereSql, joinSql, params } = buildWhereClause(filters);
-        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento' };
+        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento', 'Informação': 'informacao' };
         const valueField = valueTypeMap[filters.valueType] || 'provento';
 
         // 1. Consulta SQL (ADICIONADO d_evt.id_evento)
@@ -971,7 +973,7 @@ router.post('/reports/cc-lotacao-colaborador', async (req, res) => {
     const filters = req.body;
     try {
         const { whereSql, joinSql, params } = buildWhereClause(filters);
-        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento' };
+        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento', 'Informação': 'informacao' };
         const valueField = valueTypeMap[filters.valueType] || 'provento';
 
         // 1. Consulta SQL (ADICIONADO d_evt.id_evento e cc_map.cc_pai_nome)
@@ -1117,7 +1119,7 @@ router.post('/reports/folha-vs-colaboradores', async (req, res) => {
     try {
         // Usa a mesma função de filtros dos outros relatórios (já com a lógica de CC Pai)
         const { whereSql, joinSql, params } = buildWhereClause(filters);
-        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento' };
+        const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento', 'Informação': 'informacao' };
         const valueField = valueTypeMap[filters.valueType] || 'provento';
 
         // 1. Consulta SQL para buscar os dois indicadores por mês
@@ -1257,37 +1259,45 @@ router.post('/lancamentos/encargos', async (req, res) => {
 
 // --- ROTA DO RELATÓRIO DE ENCARGOS (CÁLCULO FINAL) ---
 router.post('/reports/analise-encargos', async (req, res) => {
-    const { year } = req.body; // Recebe o Ano (ex: "2025") ou "Todos" (não recomendado p/ performance)
+    
+    // --- INÍCIO DA CORREÇÃO ---
+    // 1. Receber TODOS os filtros que o frontend envia (antes só pegava 'year')
+    const filters = req.body; 
+    const { year } = filters; // 'year' ainda é needed para a consulta MySQL
     
     try {
-        let whereClause = "";
-        let params = [];
-        if(year && year !== 'Todos') {
-            whereClause = "WHERE EXTRACT(YEAR FROM f.data) = $1";
-            params.push(year);
-        }
+        // 2. Usar a função global que JÁ EXISTE para criar os filtros corretos
+        // Esta função já lida com Ano, Mês, Empresa e Centro de Custo (Pai)
+        const { whereSql, joinSql, params } = buildWhereClause(filters);
+        // --- FIM DA CORREÇÃO ---
 
         // PASSO 1: Buscar Totais de Folha e FGTS no DW (Agrupado por Estabelecimento/Mês)
-        // FGTS: Vamos assumir que existem eventos com nome 'FGTS' ou tipo correspondente. 
-        // Ajuste o filtro "d_evt.evento ILIKE '%FGTS%'" conforme o nome real no seu banco.
+        
         const sqlDW = `
             SELECT 
-                emp.id_empresa,
-                emp.empresa AS nome_empresa,
-                est.id_estabelecimento,
+                -- 3. Mudar aliases de 'emp' para 'd_emp' e 'est' para 'd_est'
+                -- para bater com os joins de buildWhereClause
+                d_emp.id_empresa,
+                d_emp.empresa AS nome_empresa,
+                d_est.id_estabelecimento,
                 EXTRACT(MONTH FROM f.data) as mes,
                 EXTRACT(YEAR FROM f.data) as ano,
-                -- Soma de Proventos (Base de cálculo geral)
+                
                 SUM(f.provento) as total_folha,
-                -- Soma de FGTS (Baseado em eventos de FGTS)
-                SUM(CASE WHEN d_evt.evento ILIKE '%FGTS%' THEN f.liquido ELSE 0 END) as total_fgts
+                SUM(CASE WHEN d_evt.evento ILIKE '%FGTS%' THEN f.informacao ELSE 0 END) as total_fgts
+
             FROM gold.f_fortes_pagamento f
-            JOIN gold.d_fortes_empresa emp ON CAST(f.id_empresa AS TEXT) = CAST(emp.id_empresa AS TEXT)
-            JOIN gold.d_fortes_estabelecimento est ON CAST(f.id_estabelecimento AS TEXT) = CAST(est.id_estabelecimento AS TEXT)
-            JOIN gold.d_fortes_evento d_evt ON f.id_evento = d_evt.id_evento
-            ${whereClause}
-            GROUP BY emp.id_empresa, emp.empresa, est.id_estabelecimento, mes, ano
+            
+            -- 4. Usar os JOINS e WHEREs corretos da função global
+            ${joinSql}
+            -- (buildWhereClause já inclui d_evt, d_emp, d_est)
+            
+            ${whereSql}
+            
+            GROUP BY d_emp.id_empresa, d_emp.empresa, d_est.id_estabelecimento, mes, ano
         `;
+        
+        // 5. Passar os parâmetros corretos para a query
         const { rows: dadosDW } = await dbDW.query(sqlDW, params);
 
         // PASSO 2: Buscar Histórico de Alíquotas no Banco Local (MySQL)
@@ -1298,45 +1308,35 @@ router.post('/reports/analise-encargos', async (req, res) => {
         `);
 
         // PASSO 3: Buscar Compensações/Recolhimentos manuais
+        // Adiciona um fallback para o ano, caso 'Todos' seja selecionado
+        const yearForMySQL = (year && year !== 'Todos') ? year : new Date().getFullYear();
+            
         const [lancamentosManuais] = await dbApp.query(`
             SELECT id_empresa, competencia, valor_compensacao, valor_recolhimento
             FROM lancamentos_encargos_empresa
             WHERE YEAR(competencia) = ?
-        `, [year]);
+        `, [yearForMySQL]); // Usar o ano filtrado
 
         // PASSO 4: Processamento em Memória (Node.js)
-        // Calcular INSS linha a linha e consolidar
+        // (Esta parte já estava correta, agrupando por mês)
         
-        const consolidado = {}; // Chave: "id_empresa|ano|mes"
-
+        const consolidado = {}; 
         dadosDW.forEach(row => {
-            const chave = `${row.id_empresa}|${row.ano}|${row.mes}`;
-            
-            // Data do movimento para buscar a regra vigente
+            const chave = `${row.ano}|${row.mes}`;
             const dataMovimento = new Date(row.ano, row.mes - 1, 1); 
-
-            // Encontrar regra de alíquota vigente para este estabelecimento
             const regra = regrasAliquota.find(r => 
                 r.id_estabelecimento == row.id_estabelecimento && 
                 new Date(r.competencia_inicio) <= dataMovimento
             );
-
-            // Definir alíquotas (Padrão se não achar regra)
             const patronal = regra ? parseFloat(regra.aliq_patronal) : 20.0;
             const rat = regra ? parseFloat(regra.rat) : 0.0;
             const fap = regra ? parseFloat(regra.fap) : 1.0;
-            const terceiros = regra ? parseFloat(regra.aliq_terceiros) : 0.0; // Se for 5.8, use 5.8
-
-            // Cálculo do INSS (Base Folha * Alíquotas)
-            // Fórmula: (Patronal + Terceiros + (RAT * FAP)) / 100
+            const terceiros = regra ? parseFloat(regra.aliq_terceiros) : 0.0;
             const percentualTotal = patronal + terceiros + (rat * fap);
             const valorINSS = (parseFloat(row.total_folha) * percentualTotal) / 100;
 
-            // Agregar por Empresa
             if (!consolidado[chave]) {
                 consolidado[chave] = {
-                    id_empresa: row.id_empresa,
-                    nome_empresa: row.nome_empresa,
                     mes: row.mes,
                     ano: row.ano,
                     folha: 0,
@@ -1351,24 +1351,15 @@ router.post('/reports/analise-encargos', async (req, res) => {
         });
 
         // PASSO 5: Unir com Lançamentos Manuais e Formatar Saída
+        // (Esta parte também já estava correta)
         const relatorioFinal = Object.values(consolidado).map(item => {
-            // Encontrar lançamento manual
             const dataComp = new Date(item.ano, item.mes - 1, 1).toISOString().slice(0, 10);
-            const manual = lancamentosManuais.find(l => 
-                l.id_empresa == item.id_empresa && 
+            const manuaisDoMes = lancamentosManuais.filter(l => 
                 new Date(l.competencia).toISOString().slice(0, 10) === dataComp
             );
-
-            const compensacao = manual ? parseFloat(manual.valor_compensacao) : 0;
-            // Se tiver valor recolhido manual, usa ele. Se não, calcula o teórico.
-            // Teórico = (INSS - Compensação) + FGTS (FGTS é pago em guia separada, mas compõe o custo)
-            // *Nota:* Normalmente "Recolhimento" no contexto de encargos foca na GPS/DARF (INSS). 
-            // Vou retornar o valor manual se existir, senão retorna o cálculo do INSS líquido.
-            const recolhimentoManual = manual ? parseFloat(manual.valor_recolhimento) : 0;
-            
+            const compensacao = manuaisDoMes.reduce((acc, m) => acc + parseFloat(m.valor_compensacao), 0);
+            const recolhimentoManual = manuaisDoMes.reduce((acc, m) => acc + parseFloat(m.valor_recolhimento), 0);
             const totalEncargos = item.inss + item.fgts;
-            
-            // Cálculo sugerido de recolhimento (Apenas INSS Liquido, pois FGTS é outra guia)
             const recolhimentoINSSCalc = item.inss - compensacao; 
 
             return {
@@ -1386,6 +1377,5 @@ router.post('/reports/analise-encargos', async (req, res) => {
         handleError(res, error, 'Erro ao gerar relatório de encargos.');
     }
 });
-
 
 module.exports = router;
