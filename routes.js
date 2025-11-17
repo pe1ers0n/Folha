@@ -126,7 +126,7 @@ router.get('/cadastro/estabelecimentos/:id/historico', async (req, res) => {
                 fap,
                 aliq_terceiros
             FROM historico_encargos_estabelecimento
-            WHERE id_estabelecimento = ?
+            WHERE TRIM(id_estabelecimento) = TRIM(?)
             ORDER BY competencia_inicio DESC
         `, [id]);
         
@@ -143,9 +143,17 @@ router.get('/cadastro/estabelecimentos/:id/historico', async (req, res) => {
 
 // 3. Salvar Histórico (POST) - Adaptado para MySQL
 router.post('/cadastro/estabelecimentos/historico', async (req, res) => {
-    const { id_estabelecimento, nome_estabelecimento, competencia, patronal, rat, fap, terceiros } = req.body;
+    // Desestrutura
+    let { id_estabelecimento, nome_estabelecimento, competencia, patronal, rat, fap, terceiros } = req.body;
     
-    console.log("Salvando no MySQL:", { id_estabelecimento, competencia });
+    // --- INÍCIO DA CORREÇÃO ---
+    // Garante que o ID salvo no MySQL não tenha espaços
+    if (id_estabelecimento) {
+        id_estabelecimento = id_estabelecimento.trim();
+    }
+    // --- FIM DA CORREÇÃO ---
+    
+    console.log("Salvando no MySQL (com TRIM):", { id_estabelecimento, competencia });
 
     try {
         const dataInicio = `${competencia}-01`; 
@@ -164,7 +172,7 @@ router.post('/cadastro/estabelecimentos/historico', async (req, res) => {
         `;
 
         const values = [
-            id_estabelecimento, 
+            id_estabelecimento, // <-- Agora está sem espaços
             nome_estabelecimento, 
             dataInicio, 
             patronal, 
@@ -293,7 +301,6 @@ const buildWhereClause = (filters, startIndex = 1) => {
         'LEFT JOIN gold.d_fortes_estabelecimento d_est ON f.id_estabelecimento = d_est.id_estabelecimento',
         'LEFT JOIN gold.d_fortes_evento d_evt ON f.id_evento = d_evt.id_evento',
         'LEFT JOIN gold.d_fortes_tipo_folha d_tf ON f.id_folha = d_tf.id_folha',
-        // --- JOINS ATUALIZADOS PARA O CC PAI (COM SUBQUERY PARA EVITAR DUPLICATAS) ---
         `LEFT JOIN (
             SELECT DISTINCT ON (dcc.descricao)
                 dcc.descricao AS cc_filho_nome,
@@ -312,18 +319,32 @@ const buildWhereClause = (filters, startIndex = 1) => {
         whereClauses.push(`EXTRACT(YEAR FROM f.data) = $${paramIndex++}`); 
         params.push(filters.year); 
     }
-    if (filters.month && filters.month !== 'Todos') {
+    
+    // --- INÍCIO DA CORREÇÃO (MÊS) ---
+    // Verifica se o filtro de mês existe e se NÃO é "Todos" ou "Todos os Meses"
+    if (filters.month && filters.month !== 'Todos' && filters.month !== 'Todos os Meses') {
         const monthNumber = MONTH_MAP[filters.month];
         if(monthNumber) {
             whereClauses.push(`EXTRACT(MONTH FROM f.data) = $${paramIndex++}`); 
             params.push(monthNumber); 
         }
     } 
-    if (filters.company && filters.company !== 'Todas') { 
-        whereClauses.push(`d_emp.empresa = $${paramIndex++}`); 
-        params.push(filters.company); 
+    // --- FIM DA CORREÇÃO ---
+
+    // Aceita array para Empresa
+    if (filters.company && filters.company.length > 0) { 
+        const placeholders = filters.company.map(() => `$${paramIndex++}`);
+        whereClauses.push(`d_emp.empresa IN (${placeholders.join(',')})`); 
+        params.push(...filters.company); 
     }
     
+    // Aceita array para Centro de Custo
+    if (filters.costCenter && filters.costCenter.length > 0) {
+        const placeholders = filters.costCenter.map(() => `$${paramIndex++}`);
+        whereClauses.push(`cc_map.cc_pai_nome IN (${placeholders.join(',')})`);
+        params.push(...filters.costCenter);
+    }
+
     if (filters.payrollTypes && filters.payrollTypes.length > 0) { 
         const placeholders = filters.payrollTypes.map(() => `$${paramIndex++}`);
         whereClauses.push(`d_tf.descricao IN (${placeholders.join(',')})`); 
@@ -336,16 +357,15 @@ const buildWhereClause = (filters, startIndex = 1) => {
         whereClauses.push(`d_lot.nome_lotacao IN (${placeholders.join(',')})`);
         params.push(...lotationNames);
     }
-    // ATUALIZADO: Filtra por pai.descricao (CC PAI)
-    if (filters.costCenter && filters.costCenter !== 'Todos') {
-        whereClauses.push(`cc_map.cc_pai_nome = $${paramIndex++}`);
-        params.push(filters.costCenter);
-    }
     
     if (filters.events && filters.events.length > 0) {
         const placeholders = filters.events.map(() => `$${paramIndex++}`);
         whereClauses.push(`d_evt.evento IN (${placeholders.join(',')})`);
         params.push(...filters.events);
+    }
+
+    if (filters.valueType === 'Proventos') {
+        whereClauses.push(`d_tf.descricao NOT ILIKE '%ADIANTAMENTO%'`);
     }
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
@@ -570,7 +590,7 @@ router.get('/reports/filters', async (req, res) => {
             datasDb, empresasDb, tiposFolhaDb, eventosDb, ccsDb, lotacoesDb
         ] = await Promise.all([
             dbDW.query('SELECT DISTINCT EXTRACT(YEAR FROM data) AS ano, EXTRACT(MONTH FROM data) AS mes_num FROM gold.f_fortes_pagamento'),
-            dbDW.query('SELECT DISTINCT empresa AS nome_empresa FROM gold.d_fortes_empresa ORDER BY nome_empresa'),
+            dbDW.query('SELECT DISTINCT empresa AS nome_empresa FROM gold.d_fortes_empresa WHERE empresa IS NOT NULL ORDER BY nome_empresa'),
             dbDW.query('SELECT DISTINCT descricao AS descricao_tipo_folha FROM gold.d_fortes_tipo_folha ORDER BY descricao_tipo_folha'),
             dbDW.query('SELECT DISTINCT evento FROM gold.d_fortes_evento WHERE evento IS NOT NULL ORDER BY evento'),
             // ATUALIZADO: Popula o filtro com os CCs Pai
@@ -592,6 +612,7 @@ router.get('/reports/filters', async (req, res) => {
                  LEFT JOIN gold.d_fortes_lotacao l ON f.id_lotacao = l.id_lotacao
                  LEFT JOIN gold.d_fortes_empresa e ON f.id_empresa = e.id_empresa
                  LEFT JOIN gold.d_fortes_estabelecimento es ON f.id_estabelecimento = es.id_estabelecimento
+                 WHERE l.nome_lotacao IS NOT NULL AND e.empresa IS NOT NULL AND es.estabelecimento IS NOT NULL
             `)
         ]);
         
@@ -612,15 +633,18 @@ router.get('/reports/filters', async (req, res) => {
         const allAvailableMonths = [...new Set([...standardMonths, ...meses].filter(Boolean))]; 
         allAvailableMonths.sort((a, b) => MONTH_MAP[a] - MONTH_MAP[b]);
 
+        // --- CORREÇÃO AQUI ---
+        // Removido 'Todos' e 'Todas' das listas. O frontend irá adicionar isso.
         const filterOptions = {
-            years: ['Todos', ...anos],
-            months: ['Todos', ...allAvailableMonths], 
-            companies: ['Todas', ...empresasDb.rows.map(r => r.nome_empresa)],
-            costCenters: ['Todos', ...ccsDb.rows.map(r => r.nome_cc).sort()],
+            years: anos,
+            months: allAvailableMonths, 
+            companies: empresasDb.rows.map(r => r.nome_empresa),
+            costCenters: ccsDb.rows.map(r => r.nome_cc).sort(),
             lotations: uniqueLotations,
             payrollTypes: tiposFolhaDb.rows.map(r => r.descricao_tipo_folha),
-            events: ['Todos', ...(eventosDb.rows || []).map(r => r.evento)]
+            events: (eventosDb.rows || []).map(r => r.evento)
         };
+        // --- FIM DA CORREÇÃO ---
         
         res.json({ filterOptions });
     } catch (error) {
@@ -1173,17 +1197,15 @@ router.post('/reports/folha-vs-colaboradores', async (req, res) => {
 
 // --- ROTAS DE LANÇAMENTO DE ENCARGOS ---
 
-        // 1. Buscar dados para a tela de Lançamentos (Lista empresas e valores salvos)
-    router.get('/lancamentos/encargos', async (req, res) => {
+    // 1. Buscar dados para a tela de Lançamentos (Lista empresas e valores salvos)
+router.get('/lancamentos/encargos', async (req, res) => {
     const { mes, ano } = req.query;
     
-    // Validação básica
     if (!mes || !ano) return res.status(400).json({ message: 'Mês e Ano são obrigatórios.' });
 
     const competencia = `${ano}-${mes}-01`;
 
     try {
-        // 1. Busca empresas no DW com CAST explícito para garantir compatibilidade de tipos
         const queryDW = `
             SELECT DISTINCT 
                 emp.id_empresa, 
@@ -1195,32 +1217,27 @@ router.post('/reports/folha-vs-colaboradores', async (req, res) => {
               AND EXTRACT(YEAR FROM f.data) = $2
             ORDER BY emp.empresa
         `;
-        
         const { rows: empresasDW } = await dbDW.query(queryDW, [mes, ano]);
 
-        // Se não achar nada no DW, retorna lista vazia logo (evita erro no MySQL)
         if (empresasDW.length === 0) {
             return res.json([]); 
         }
 
-        // 2. Busca lançamentos já salvos no MySQL
+        // Query MySQL atualizada (não busca 'valor_recolhimento')
         const [lancamentosSalvos] = await dbApp.query(`
-            SELECT id_empresa, valor_compensacao, valor_recolhimento 
+            SELECT id_empresa, valor_compensacao 
             FROM lancamentos_encargos_empresa 
             WHERE competencia = ?
         `, [competencia]);
 
-        // 3. Mescla os dados (Left Join manual)
         const resultado = empresasDW.map(emp => {
-            // Procura se já existe lançamento para essa empresa (comparando ID como string para segurança)
             const salvo = lancamentosSalvos.find(l => String(l.id_empresa) === String(emp.id_empresa));
             
             return {
                 id_empresa: emp.id_empresa,
                 nome_empresa: emp.nome_empresa,
-                // Se achou salvo, usa o valor. Se não, usa 0.00
                 compensacao: salvo ? parseFloat(salvo.valor_compensacao) : 0.00,
-                recolhimento: salvo ? parseFloat(salvo.valor_recolhimento) : 0.00
+                // Linha de 'recolhimento' removida
             };
         });
 
@@ -1231,25 +1248,22 @@ router.post('/reports/folha-vs-colaboradores', async (req, res) => {
     }
 });
 
-// 2. Salvar Lançamentos (Compensação e Recolhimento)
+// 2. Salvar Lançamentos (Apenas Compensação)
 router.post('/lancamentos/encargos', async (req, res) => {
     const { lancamentos, mes, ano } = req.body;
     const competencia = `${ano}-${mes}-01`;
-
-    // Recebe um array de { id_empresa, nome_empresa, compensacao, recolhimento }
     
     try {
-        // Vamos salvar um por um (poderia ser otimizado com bulk insert, mas assim é mais seguro para poucos registros)
         for (const item of lancamentos) {
+            // Query MySQL atualizada (não salva 'valor_recolhimento')
             await dbApp.query(`
                 INSERT INTO lancamentos_encargos_empresa 
-                (id_empresa, nome_empresa, competencia, valor_compensacao, valor_recolhimento, data_atualizacao)
-                VALUES (?, ?, ?, ?, ?, NOW())
+                (id_empresa, nome_empresa, competencia, valor_compensacao, data_atualizacao)
+                VALUES (?, ?, ?, ?, NOW())
                 ON DUPLICATE KEY UPDATE 
                     valor_compensacao = VALUES(valor_compensacao),
-                    valor_recolhimento = VALUES(valor_recolhimento),
                     data_atualizacao = NOW()
-            `, [item.id_empresa, item.nome_empresa, competencia, item.compensacao, item.recolhimento]);
+            `, [item.id_empresa, item.nome_empresa, competencia, item.compensacao]); // <-- 'recolhimento' removido do array
         }
         res.json({ message: 'Lançamentos salvos com sucesso!' });
     } catch (error) {
@@ -1258,25 +1272,18 @@ router.post('/lancamentos/encargos', async (req, res) => {
 });
 
 // --- ROTA DO RELATÓRIO DE ENCARGOS (CÁLCULO FINAL) ---
+// SUBSTITUA A SUA ROTA INTEIRA POR ESTA:
 router.post('/reports/analise-encargos', async (req, res) => {
     
-    // --- INÍCIO DA CORREÇÃO ---
-    // 1. Receber TODOS os filtros que o frontend envia (antes só pegava 'year')
     const filters = req.body; 
-    const { year } = filters; // 'year' ainda é needed para a consulta MySQL
+    const { year } = filters; 
     
     try {
-        // 2. Usar a função global que JÁ EXISTE para criar os filtros corretos
-        // Esta função já lida com Ano, Mês, Empresa e Centro de Custo (Pai)
         const { whereSql, joinSql, params } = buildWhereClause(filters);
-        // --- FIM DA CORREÇÃO ---
 
-        // PASSO 1: Buscar Totais de Folha e FGTS no DW (Agrupado por Estabelecimento/Mês)
-        
+        // PASSO 1: Buscar Totais de Folha e FGTS no DW
         const sqlDW = `
             SELECT 
-                -- 3. Mudar aliases de 'emp' para 'd_emp' e 'est' para 'd_est'
-                -- para bater com os joins de buildWhereClause
                 d_emp.id_empresa,
                 d_emp.empresa AS nome_empresa,
                 d_est.id_estabelecimento,
@@ -1287,17 +1294,11 @@ router.post('/reports/analise-encargos', async (req, res) => {
                 SUM(CASE WHEN d_evt.evento ILIKE '%FGTS%' THEN f.informacao ELSE 0 END) as total_fgts
 
             FROM gold.f_fortes_pagamento f
-            
-            -- 4. Usar os JOINS e WHEREs corretos da função global
             ${joinSql}
-            -- (buildWhereClause já inclui d_evt, d_emp, d_est)
-            
             ${whereSql}
-            
             GROUP BY d_emp.id_empresa, d_emp.empresa, d_est.id_estabelecimento, mes, ano
         `;
         
-        // 5. Passar os parâmetros corretos para a query
         const { rows: dadosDW } = await dbDW.query(sqlDW, params);
 
         // PASSO 2: Buscar Histórico de Alíquotas no Banco Local (MySQL)
@@ -1308,30 +1309,30 @@ router.post('/reports/analise-encargos', async (req, res) => {
         `);
 
         // PASSO 3: Buscar Compensações/Recolhimentos manuais
-        // Adiciona um fallback para o ano, caso 'Todos' seja selecionado
         const yearForMySQL = (year && year !== 'Todos') ? year : new Date().getFullYear();
             
         const [lancamentosManuais] = await dbApp.query(`
-            SELECT id_empresa, competencia, valor_compensacao, valor_recolhimento
+            SELECT id_empresa, competencia, valor_compensacao
             FROM lancamentos_encargos_empresa
             WHERE YEAR(competencia) = ?
-        `, [yearForMySQL]); // Usar o ano filtrado
+        `, [yearForMySQL]); // Só precisamos da compensação
 
         // PASSO 4: Processamento em Memória (Node.js)
-        // (Esta parte já estava correta, agrupando por mês)
-        
         const consolidado = {}; 
         dadosDW.forEach(row => {
             const chave = `${row.ano}|${row.mes}`;
             const dataMovimento = new Date(row.ano, row.mes - 1, 1); 
+            
             const regra = regrasAliquota.find(r => 
-                r.id_estabelecimento == row.id_estabelecimento && 
+                String(r?.id_estabelecimento).trim() == String(row?.id_estabelecimento).trim() && 
                 new Date(r.competencia_inicio) <= dataMovimento
             );
+            
             const patronal = regra ? parseFloat(regra.aliq_patronal) : 20.0;
             const rat = regra ? parseFloat(regra.rat) : 0.0;
             const fap = regra ? parseFloat(regra.fap) : 1.0;
             const terceiros = regra ? parseFloat(regra.aliq_terceiros) : 0.0;
+            const isEncargoZero = (regra && patronal === 0 && rat === 0 && terceiros === 0);
             const percentualTotal = patronal + terceiros + (rat * fap);
             const valorINSS = (parseFloat(row.total_folha) * percentualTotal) / 100;
 
@@ -1346,28 +1347,32 @@ router.post('/reports/analise-encargos', async (req, res) => {
             }
             
             consolidado[chave].folha += parseFloat(row.total_folha);
-            consolidado[chave].fgts += parseFloat(row.total_fgts);
-            consolidado[chave].inss += valorINSS;
+            consolidado[chave].inss += valorINSS; 
+            if (!isEncargoZero) {
+                consolidado[chave].fgts += parseFloat(row.total_fgts);
+            }
         });
 
         // PASSO 5: Unir com Lançamentos Manuais e Formatar Saída
-        // (Esta parte também já estava correta)
         const relatorioFinal = Object.values(consolidado).map(item => {
             const dataComp = new Date(item.ano, item.mes - 1, 1).toISOString().slice(0, 10);
             const manuaisDoMes = lancamentosManuais.filter(l => 
                 new Date(l.competencia).toISOString().slice(0, 10) === dataComp
             );
+            
+            // --- CORREÇÃO DA LÓGICA ---
+            // Compensação é o valor lançado
             const compensacao = manuaisDoMes.reduce((acc, m) => acc + parseFloat(m.valor_compensacao), 0);
-            const recolhimentoManual = manuaisDoMes.reduce((acc, m) => acc + parseFloat(m.valor_recolhimento), 0);
+            // Recolhimento é o cálculo
+            const recolhimento = item.inss - compensacao; 
             const totalEncargos = item.inss + item.fgts;
-            const recolhimentoINSSCalc = item.inss - compensacao; 
+            // --- FIM DA CORREÇÃO ---
 
             return {
                 ...item,
                 total_encargos: totalEncargos,
                 compensacao: compensacao,
-                recolhimento_informado: recolhimentoManual,
-                recolhimento_calculado: recolhimentoINSSCalc
+                recolhimento: recolhimento, // <-- Envia o valor calculado
             };
         });
 

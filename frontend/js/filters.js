@@ -83,13 +83,18 @@ window.loadReportFilters = async function() {
     }
 }
 
+// --- FUNÇÃO INTEIRA SUBSTITUÍDA ---
 // ATUALIZADO: Adicionado 'window.'
 window.populateReportFilters = function(filterOptions) {
-    // Selects Simples
+    // Selects Simples (Ano e Mês)
     const reportsFilterYear = document.getElementById('reports-filter-year');
     const reportsFilterMonth = document.getElementById('reports-filter-month');
-    const reportsFilterCompany = document.getElementById('reports-filter-company');
-    const reportsFilterCostCenter = document.getElementById('reports-filter-cost-center');
+    
+    // Painéis Multi-Select (Empresa e CC)
+    const reportsCompanyPanel = document.getElementById('reports-company-panel');
+    const reportsCompanyText = document.getElementById('reports-company-text');
+    const reportsCostCenterPanel = document.getElementById('reports-cc-panel');
+    const reportsCostCenterText = document.getElementById('reports-cc-text');
     
     // Comparativo Selects
     const compareYear1 = document.getElementById('compare-year1');
@@ -97,47 +102,47 @@ window.populateReportFilters = function(filterOptions) {
     const compareMonth1 = document.getElementById('compare-month1');
     const compareMonth2 = document.getElementById('compare-month2');
 
-    // Opções HTML
+    // Opções HTML (API agora envia dados puros)
     const yearOptions = filterOptions.years.map(y => `<option>${y}</option>`).join('');
     const monthOptions = filterOptions.months.map(m => `<option>${m}</option>`).join('');
-    const companyOptions = (filterOptions.companies || []).map(c => `<option>${c}</option>`).join('');
-    const ccOptions = (filterOptions.costCenters || []).map(cc => `<option>${cc}</option>`).join('');
 
-    // Popula Selects
+    // Popula Selects de Ano/Mês (Adiciona "Todos" aqui)
     if(reportsFilterYear) reportsFilterYear.innerHTML = '<option value="Todos">Todos os Anos</option>' + yearOptions;
     if(reportsFilterMonth) reportsFilterMonth.innerHTML = '<option value="Todos">Todos os Meses</option>' + monthOptions;
-    if(reportsFilterCompany) reportsFilterCompany.innerHTML = '<option value="Todas">Todas as Empresas</option>' + companyOptions;
-    if(reportsFilterCostCenter) reportsFilterCostCenter.innerHTML = '<option value="Todos">Todos os Centros</option>' + ccOptions;
-
+    
+    // Popula selects do Comparativo (não precisam de "Todos")
     if(compareYear1) compareYear1.innerHTML = yearOptions;
     if(compareYear2) compareYear2.innerHTML = yearOptions;
     if(compareMonth1) compareMonth1.innerHTML = monthOptions;
     if(compareMonth2) compareMonth2.innerHTML = monthOptions;
 
-    // --- MULTI SELECTS (ATUALIZADO COM MARCAR/DESMARCAR TODOS) ---
+    // --- MULTI SELECTS ---
     const selectLinksHtml = `
         <div class="p-1 flex justify-between border-b">
             <a href="#" class="text-xs text-blue-600 hover:underline select-all">Marcar Todos</a>
             <a href="#" class="text-xs text-blue-600 hover:underline deselect-all">Desmarcar Todos</a>
         </div>
     `;
+
+    // Função helper para criar HTML de checkbox
+    const createCheckboxHtml = (items, itemClass) => {
+        return items.map(item => `
+            <label class="flex items-center space-x-2 p-1 rounded hover:bg-gray-100 ${itemClass} cursor-pointer">
+                <input type="checkbox" value="${item}" class="h-4 w-4 rounded border-gray-300 focus:ring-blue-700">
+                <span class="text-sm text-gray-700">${item}</span>
+            </label>
+        `).join('');
+    };
     
     // 1. Tipos de Folha
     const reportsPayrollTypePanel = document.getElementById('reports-payroll-type-panel');
     const reportsPayrollTypeText = document.getElementById('reports-payroll-type-text');
     if (reportsPayrollTypePanel) {
-        const payrollHtml = (filterOptions.payrollTypes || []).map(t => `
-            <label class="flex items-center space-x-2 p-1 rounded hover:bg-gray-100 payroll-type-filter-label cursor-pointer">
-                <input type="checkbox" value="${t}" class="h-4 w-4 rounded border-gray-300 focus:ring-blue-700">
-                <span class="text-sm text-gray-700">${t}</span>
-            </label>
-        `).join('');
+        const payrollHtml = createCheckboxHtml(filterOptions.payrollTypes || [], 'payroll-type-filter-label');
         const listContainer = reportsPayrollTypePanel.querySelector('.payroll-type-list');
         if(listContainer) {
-            // Adiciona os links + a lista
             listContainer.innerHTML = selectLinksHtml.replaceAll('select-all', 'payroll-type-select-all').replaceAll('deselect-all', 'payroll-type-deselect-all') + payrollHtml;
         }
-        
         setupMultiSelectFilter(reportsPayrollTypePanel, reportsPayrollTypeText, 'Todos os Tipos', null, '.payroll-type-select-all', '.payroll-type-deselect-all', '.payroll-type-filter-label');
     }
 
@@ -145,19 +150,12 @@ window.populateReportFilters = function(filterOptions) {
     const reportsLotationPanel = document.getElementById('reports-lotation-panel');
     const reportsLotationText = document.getElementById('reports-lotation-text');
     if (reportsLotationPanel) {
-        const lotationHtml = (filterOptions.lotations || []).map(l => `
-            <label class="flex items-center space-x-2 p-1 rounded hover:bg-gray-100 lotation-filter-label cursor-pointer">
-                <input type="checkbox" value="${l}" class="h-4 w-4 rounded border-gray-300 focus:ring-blue-700">
-                <span class="text-sm text-gray-700">${l}</span>
-            </label>
-        `).join('');
+        const lotationHtml = createCheckboxHtml(filterOptions.lotations || [], 'lotation-filter-label');
         const listContainer = reportsLotationPanel.querySelector('.lotation-list');
         if(listContainer) {
-            // Adiciona os links + a lista (o search já está no HTML)
             listContainer.insertAdjacentHTML('afterbegin', selectLinksHtml.replaceAll('select-all', 'lotation-select-all').replaceAll('deselect-all', 'lotation-deselect-all'));
             listContainer.insertAdjacentHTML('beforeend', lotationHtml);
         }
-
         setupMultiSelectFilter(reportsLotationPanel, reportsLotationText, 'Todas as Lotações', '.lotation-search', '.lotation-select-all', '.lotation-deselect-all', '.lotation-filter-label');
     }
 
@@ -165,19 +163,34 @@ window.populateReportFilters = function(filterOptions) {
     const reportsEventPanel = document.getElementById('reports-event-panel');
     const reportsEventText = document.getElementById('reports-event-text');
     if (reportsEventPanel) {
-        const eventHtml = (filterOptions.events || []).map(e => `
-            <label class="flex items-center space-x-2 p-1 rounded hover:bg-gray-100 event-filter-label cursor-pointer">
-                <input type="checkbox" value="${e}" class="h-4 w-4 rounded border-gray-300 focus:ring-blue-700">
-                <span class="text-sm text-gray-700">${e}</span>
-            </label>
-        `).join('');
+        const eventHtml = createCheckboxHtml(filterOptions.events || [], 'event-filter-label');
         const listContainer = reportsEventPanel.querySelector('.event-list');
         if(listContainer) {
-            // Adiciona os links + a lista (o search já está no HTML)
             listContainer.insertAdjacentHTML('afterbegin', selectLinksHtml.replaceAll('select-all', 'event-select-all').replaceAll('deselect-all', 'event-deselect-all'));
             listContainer.insertAdjacentHTML('beforeend', eventHtml);
         }
-
         setupMultiSelectFilter(reportsEventPanel, reportsEventText, 'Todos os Eventos', '.event-search', '.event-select-all', '.event-deselect-all', '.event-filter-label');
+    }
+
+    // 4. ATUALIZADO: Empresas
+    if (reportsCompanyPanel) {
+        const companyHtml = createCheckboxHtml(filterOptions.companies || [], 'company-filter-label');
+        const listContainer = reportsCompanyPanel.querySelector('.company-list');
+        if(listContainer) {
+            listContainer.insertAdjacentHTML('afterbegin', selectLinksHtml.replaceAll('select-all', 'company-select-all').replaceAll('deselect-all', 'company-deselect-all'));
+            listContainer.insertAdjacentHTML('beforeend', companyHtml);
+        }
+        setupMultiSelectFilter(reportsCompanyPanel, reportsCompanyText, 'Todas as Empresas', '.company-search', '.company-select-all', '.company-deselect-all', '.company-filter-label');
+    }
+
+    // 5. ATUALIZADO: Centros de Custo
+    if (reportsCostCenterPanel) {
+        const ccHtml = createCheckboxHtml(filterOptions.costCenters || [], 'cc-filter-label');
+        const listContainer = reportsCostCenterPanel.querySelector('.cc-list');
+        if(listContainer) {
+            listContainer.insertAdjacentHTML('afterbegin', selectLinksHtml.replaceAll('select-all', 'cc-select-all').replaceAll('deselect-all', 'cc-deselect-all'));
+            listContainer.insertAdjacentHTML('beforeend', ccHtml);
+        }
+        setupMultiSelectFilter(reportsCostCenterPanel, reportsCostCenterText, 'Todos os Centros', '.cc-search', '.cc-select-all', '.cc-deselect-all', '.cc-filter-label');
     }
 }

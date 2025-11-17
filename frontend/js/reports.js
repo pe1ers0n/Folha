@@ -12,14 +12,10 @@ const MONTH_NAME_MAP = {
 };
 
 // FUNÇÃO HELPER PARA CALCULAR PERCENTUAL
-const getPerc = (valor, total) => {
-    if (total === 0 || valor === 0) return '(0.00%)';
-    // Retorna o valor negativo entre parênteses se for compensação
-    if (valor < 0) {
-        return `(${(valor / total * 100).toFixed(2)}%)`;
-    }
-    // Retorna o valor positivo para outros casos
-    return `(${(valor / total * 100).toFixed(2)}%)`;
+const getPercText = (valor, total) => {
+    if (total === 0 || valor === 0) return '0.00%';
+    // Retorna o percentual formatado, mesmo que 'valor' seja negativo
+    return `${(valor / total * 100).toFixed(2)}%`;
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -54,12 +50,14 @@ window.handleReportGeneration = function() {
 window.clearReportFilters = function() {
     document.getElementById('reports-filter-year').value = 'Todos';
     document.getElementById('reports-filter-month').value = 'Todos';
-    document.getElementById('reports-filter-company').value = 'Todas';
-    document.getElementById('reports-filter-cost-center').value = 'Todos';
     
+    // ATUALIZADO: Limpa os inputs de checkbox
     document.querySelectorAll('.multi-select-dropdown-panel input[type="checkbox"]').forEach(cb => cb.checked = false);
     
     if(typeof window.updateMultiSelectFilterText === 'function') {
+        // ATUALIZADO: Reseta o texto de TODOS os filtros
+        if(document.getElementById('reports-company-text')) window.updateMultiSelectFilterText([], document.getElementById('reports-company-text'), 'Todas as Empresas');
+        if(document.getElementById('reports-cc-text')) window.updateMultiSelectFilterText([], document.getElementById('reports-cc-text'), 'Todos os Centros');
         if(document.getElementById('reports-payroll-type-text')) window.updateMultiSelectFilterText([], document.getElementById('reports-payroll-type-text'), 'Todos os Tipos');
         if(document.getElementById('reports-lotation-text')) window.updateMultiSelectFilterText([], document.getElementById('reports-lotation-text'), 'Todas as Lotações');
         if(document.getElementById('reports-event-text')) window.updateMultiSelectFilterText([], document.getElementById('reports-event-text'), 'Todos os Eventos');
@@ -91,8 +89,10 @@ window.loadReportsData = async function() {
     const filters = {
         year: document.getElementById('reports-filter-year').value,
         month: document.getElementById('reports-filter-month').value,
-        company: document.getElementById('reports-filter-company').value,
-        costCenter: document.getElementById('reports-filter-cost-center').value,
+        // --- CORREÇÃO AQUI ---
+        company: getItems(document.getElementById('reports-company-panel')),
+        costCenter: getItems(document.getElementById('reports-cc-panel')),
+        // --- FIM DA CORREÇÃO ---
         valueType: document.getElementById('reports-filter-value-type').value,
         payrollTypes: getItems(document.getElementById('reports-payroll-type-panel')),
         lotations: getItems(document.getElementById('reports-lotation-panel')),
@@ -128,8 +128,10 @@ window.loadPayrollCostReport = async function() {
         const filters = {
             year: document.getElementById('reports-filter-year').value,
             month: document.getElementById('reports-filter-month').value,
-            company: document.getElementById('reports-filter-company').value,
-            costCenter: document.getElementById('reports-filter-cost-center').value,
+            // --- CORREÇÃO AQUI ---
+            company: getItems(document.getElementById('reports-company-panel')),
+            costCenter: getItems(document.getElementById('reports-cc-panel')),
+            // --- FIM DA CORREÇÃO ---
             lotations: getItems(document.getElementById('reports-lotation-panel')),
             payrollTypes: getItems(document.getElementById('reports-payroll-type-panel'))
         };
@@ -164,8 +166,10 @@ window.loadLotacaoColaboradorReport = async function() {
     const filters = {
         year: document.getElementById('reports-filter-year').value,
         month: document.getElementById('reports-filter-month').value,
-        company: document.getElementById('reports-filter-company').value,
-        costCenter: document.getElementById('reports-filter-cost-center').value,
+        // --- CORREÇÃO AQUI ---
+        company: getItems(document.getElementById('reports-company-panel')),
+        costCenter: getItems(document.getElementById('reports-cc-panel')),
+        // --- FIM DA CORREÇÃO ---
         valueType: document.getElementById('reports-filter-value-type').value,
         payrollTypes: getItems(document.getElementById('reports-payroll-type-panel')),
         lotations: getItems(document.getElementById('reports-lotation-panel')),
@@ -192,8 +196,10 @@ window.loadCcLotacaoColaboradorReport = async function() {
         const filters = {
             year: document.getElementById('reports-filter-year').value,
             month: document.getElementById('reports-filter-month').value,
-            company: document.getElementById('reports-filter-company').value,
-            costCenter: document.getElementById('reports-filter-cost-center').value,
+            // --- CORREÇÃO AQUI ---
+            company: getItems(document.getElementById('reports-company-panel')),
+            costCenter: getItems(document.getElementById('reports-cc-panel')),
+            // --- FIM DA CORREÇÃO ---
             valueType: document.getElementById('reports-filter-value-type').value,
             payrollTypes: getItems(document.getElementById('reports-payroll-type-panel')),
             lotations: getItems(document.getElementById('reports-lotation-panel')),
@@ -218,8 +224,10 @@ window.loadFolhaVsColaboradoresReport = async function() {
         const filters = {
             year: document.getElementById('reports-filter-year').value,
             month: document.getElementById('reports-filter-month').value,
-            company: document.getElementById('reports-filter-company').value,
-            costCenter: document.getElementById('reports-filter-cost-center').value,
+            // --- CORREÇÃO AQUI ---
+            company: getItems(document.getElementById('reports-company-panel')),
+            costCenter: getItems(document.getElementById('reports-cc-panel')),
+            // --- FIM DA CORREÇÃO ---
             valueType: document.getElementById('reports-filter-value-type').value,
             payrollTypes: getItems(document.getElementById('reports-payroll-type-panel')),
             lotations: getItems(document.getElementById('reports-lotation-panel')),
@@ -240,31 +248,37 @@ window.loadAnaliseEncargosReport = async function() {
     const container = document.getElementById('report-analise-encargos');
     window.showLoader(container);
     const year = document.getElementById('reports-filter-year').value || new Date().getFullYear();
+    
+    const getItems = (typeof window.getSelectedItems === 'function') ? window.getSelectedItems : (() => []);
+    
     const filters = {
         year: year,
         month: document.getElementById('reports-filter-month').value,
-        company: document.getElementById('reports-filter-company').value,
-        costCenter: document.getElementById('reports-filter-cost-center').value,
+        company: getItems(document.getElementById('reports-company-panel')),
+        costCenter: getItems(document.getElementById('reports-cc-panel')),
+        payrollTypes: getItems(document.getElementById('reports-payroll-type-panel'))
     };
     
     try {
-        // Busca os dados da API
+        // Busca os dados da API (já com filtros aplicados)
         const data = await window.callApi('/reports/analise-encargos', 'POST', filters);
-        // Busca os dados manuais para o select
-        const empresasManuais = await window.callApi(`/lancamentos/encargos?mes=${filters.month === 'Todos' ? new Date().getMonth() + 1 : MONTH_MAP[filters.month]}&ano=${filters.year === 'Todos' ? new Date().getFullYear() : filters.year}`);
 
-        // Popula o select de empresa
-        const selectEmpresa = document.getElementById('encargos-empresa-select');
-        selectEmpresa.innerHTML = '<option value="consolidado">Consolidado (Todas as Empresas)</option>';
-        const empresasUnicas = [...new Set(empresasManuais.map(e => e.nome_empresa))];
-        empresasUnicas.forEach(empresa => {
-            selectEmpresa.innerHTML += `<option value="${empresa}">${empresa}</option>`;
-        });
+        // --- INÍCIO DA CORREÇÃO ---
+        // Bloco de código que buscava 'empresasManuais' e populava
+        // o select 'encargos-empresa-select' foi REMOVIDO.
+        // --- FIM DA CORREÇÃO ---
 
         // Renderiza os dados
         renderAnaliseEncargos(data); 
 
-    } catch (err) { window.showToast(err.message, 'error'); } finally { window.hideLoader(container); }
+    } catch (err) { 
+        window.showToast(err.message, 'error'); 
+        // Limpa a tabela em caso de erro
+        const tbody = document.getElementById('tbody-relatorio-encargos');
+        if(tbody) tbody.innerHTML = `<tr><td colspan="12" class="p-6 text-center text-red-500 italic">${err.message}</td></tr>`;
+    } finally { 
+        window.hideLoader(container); 
+    }
 };
 
 // --- FUNÇÕES DE RENDERIZAÇÃO DE GRÁFICOS (Gerais) ---
@@ -711,7 +725,14 @@ function renderAnaliseEncargos(data) {
     const bnRecolhimento = document.getElementById('bn-recolhimento');
 
     if (!data || data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-gray-400 italic">Nenhum dado encontrado para os filtros selecionados.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" class="p-6 text-center text-gray-400 italic">Nenhum dado encontrado para os filtros selecionados.</td></tr>`;
+        
+        // --- LIMPA O TFOOT SE EXISTIR ---
+        const table = tbody.parentElement;
+        let tfoot = table.querySelector('tfoot');
+        if (tfoot) tfoot.innerHTML = "";
+        // --- FIM DA LIMPEZA ---
+        
         bnFolha.textContent = window.formatCurrency(0);
         bnFgts.textContent = '0.00%';
         bnInss.textContent = '0.00%';
@@ -740,28 +761,29 @@ function renderAnaliseEncargos(data) {
         totalEncargos += row.total_encargos;
         totalCompensacao += row.compensacao;
         
-        // Usa o recolhimento informado se > 0, senão usa o calculado (INSS - Comp)
-        const recolhimento = row.recolhimento_informado > 0 ? row.recolhimento_informado : row.recolhimento_calculado;
+        const recolhimento = row.recolhimento; 
         totalRecolhimento += recolhimento;
 
-        // --- INÍCIO DA MODIFICAÇÃO (PERCENTUAIS) ---
-        const percInss = getPerc(row.inss, row.folha);
-        const percFgts = getPerc(row.fgts, row.folha);
-        const percEncargo = getPerc(row.total_encargos, row.folha);
-        const percCompensacao = getPerc(row.compensacao * -1, row.folha); // Passa valor negativo
-        const percRecolhimento = getPerc(recolhimento, row.folha);
-        // --- FIM DA MODIFICAÇÃO ---
+        const percInss = getPercText(row.inss, row.folha);
+        const percFgts = getPercText(row.fgts, row.folha);
+        const percEncargo = getPercText(row.total_encargos, row.folha);
+        const percCompensacao = getPercText(row.compensacao, row.folha);
+        const percRecolhimento = getPercText(recolhimento, row.folha);
         
         tableHtml += `
             <tr class="hover:bg-gray-50">
                 <td class="py-3 px-4">${MONTH_NAME_MAP[row.mes]} / ${row.ano}</td>
                 <td class="py-3 px-4 text-right">${window.formatCurrency(row.folha)}</td>
-                
-                <td class="py-3 px-4 text-right text-cyan-600">${window.formatCurrency(row.inss)} <span class="text-xs">${percInss}</span></td>
-                <td class="py-3 px-4 text-right text-blue-600">${window.formatCurrency(row.fgts)} <span class="text-xs">${percFgts}</span></td>
-                <td class="py-3 px-4 text-right font-bold">${window.formatCurrency(row.total_encargos)} <span class="text-xs">${percEncargo}</span></td>
-                <td class="py-3 px-4 text-right text-red-500">(${window.formatCurrency(row.compensacao)}) <span class="text-xs">${percCompensacao}</span></td>
-                <td class="py-3 px-4 text-right font-bold text-green-600">${window.formatCurrency(recolhimento)} <span class="text-xs">${percRecolhimento}</span></td>
+                <td class="py-3 px-4 text-right text-cyan-600">${window.formatCurrency(row.inss)}</td>
+                <td class="py-3 px-4 text-right text-cyan-600 text-xs">${percInss}</td>
+                <td class="py-3 px-4 text-right text-blue-600">${window.formatCurrency(row.fgts)}</td>
+                <td class="py-3 px-4 text-right text-blue-600 text-xs">${percFgts}</td>
+                <td class="py-3 px-4 text-right font-bold">${window.formatCurrency(row.total_encargos)}</td>
+                <td class="py-3 px-4 text-right font-bold text-xs">${percEncargo}</td>
+                <td class="py-3 px-4 text-right text-red-500">(${window.formatCurrency(row.compensacao)})</td>
+                <td class="py-3 px-4 text-right text-red-500 text-xs">${percCompensacao}</td>
+                <td class="py-3 px-4 text-right font-bold text-green-600">${window.formatCurrency(recolhimento)}</td>
+                <td class="py-3 px-4 text-right font-bold text-green-600 text-xs">${percRecolhimento}</td>
             </tr>
         `;
         
@@ -778,12 +800,69 @@ function renderAnaliseEncargos(data) {
     
     tbody.innerHTML = tableHtml;
 
+    // --- INÍCIO DA CORREÇÃO (ADICIONAR TFOOT) ---
+    const table = tbody.parentElement;
+    let tfoot = table.querySelector('tfoot');
+    if (!tfoot) {
+        tfoot = document.createElement('tfoot');
+        table.appendChild(tfoot);
+    }
+
+    // Calcular percentuais totais
+    const percInssTotal = getPercText(totalInss, totalFolha);
+    const percFgtsTotal = getPercText(totalFgts, totalFolha);
+    const percEncargoTotal = getPercText(totalEncargos, totalFolha);
+    const percCompensacaoTotal = getPercText(totalCompensacao, totalFolha);
+    const percRecolhimentoTotal = getPercText(totalRecolhimento, totalFolha);
+    
+    // Estilo do TFOOT (pode ser cinza-claro como o header)
+    tfoot.className = "bg-gray-100 font-bold border-t-2 border-gray-300";
+    tfoot.innerHTML = `
+        <tr>
+            <td class="py-3 px-4 text-left uppercase text-xs text-gray-700">Total Geral</td>
+            <td class="py-3 px-4 text-right">${window.formatCurrency(totalFolha)}</td>
+            <td class="py-3 px-4 text-right text-cyan-600">${window.formatCurrency(totalInss)}</td>
+            <td class="py-3 px-4 text-right text-cyan-600 text-xs">${percInssTotal}</td>
+            <td class="py-3 px-4 text-right text-blue-600">${window.formatCurrency(totalFgts)}</td>
+            <td class="py-3 px-4 text-right text-blue-600 text-xs">${percFgtsTotal}</td>
+            <td class="py-3 px-4 text-right">${window.formatCurrency(totalEncargos)}</td>
+            <td class="py-3 px-4 text-right text-xs">${percEncargoTotal}</td>
+            <td class="py-3 px-4 text-right text-red-500">(${window.formatCurrency(totalCompensacao)})</td>
+            <td class="py-3 px-4 text-right text-red-500 text-xs">${percCompensacaoTotal}</td>
+            <td class="py-3 px-4 text-right text-green-600">${window.formatCurrency(totalRecolhimento)}</td>
+            <td class="py-3 px-4 text-right text-green-600 text-xs">${percRecolhimentoTotal}</td>
+        </tr>
+    `;
+    // --- FIM DA CORREÇÃO (TFOOT) ---
+
+
+    // --- INÍCIO DA CORREÇÃO (CARDS) ---
     // Preenche Banners (Big Numbers)
-    bnFolha.textContent = window.formatCurrency(totalFolha);
+    const numMeses = data.length > 0 ? data.length : 1; // Evita divisão por zero
+    const mediaFolha = (totalFolha / numMeses);
+    
+    bnFolha.innerHTML = `
+        ${window.formatCurrency(totalFolha)}
+        <div class="text-sm font-medium text-indigo-500 mt-1">Média: ${window.formatCurrency(mediaFolha)}</div>
+    `;
+    
     bnFgts.textContent = totalFolha > 0 ? `${(totalFgts / totalFolha * 100).toFixed(2)}%` : '0.00%';
     bnInss.textContent = totalFolha > 0 ? `${(totalInss / totalFolha * 100).toFixed(2)}%` : '0.00%';
-    bnTotal.textContent = window.formatCurrency(totalEncargos);
-    bnRecolhimento.textContent = window.formatCurrency(totalRecolhimento);
+    
+    // Card TOTAL ENCARGOS
+    const percEncargoTotalNum = totalFolha > 0 ? (totalEncargos / totalFolha * 100).toFixed(2) : 0;
+    bnTotal.innerHTML = `
+        ${window.formatCurrency(totalEncargos)}
+        <div class="text-sm font-medium text-gray-500 mt-1">${percEncargoTotalNum}% da Folha</div>
+    `;
+    
+    // Card RECOLHIMENTO
+    const percRecolhimentoTotalNum = totalFolha > 0 ? (totalRecolhimento / totalFolha * 100).toFixed(2) : 0;
+    bnRecolhimento.innerHTML = `
+        ${window.formatCurrency(totalRecolhimento)}
+        <div class="text-sm font-medium text-green-500 mt-1">${percRecolhimentoTotalNum}% da Folha</div>
+    `;
+    // --- FIM DA CORREÇÃO (CARDS) ---
 
     // Renderiza Gráfico de Barras (Evolução)
     const barChartId = 'encargosBarChart';

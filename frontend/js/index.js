@@ -1,7 +1,7 @@
 // js/index.js
 
 // --- URL BASE DA API ---
-const API_BASE_URL = 'http://192.168.3.67:3000'; 
+const API_BASE_URL = 'http://192.168.8.11:3000'; 
 const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY';
 
 // --- ESTADO GLOBAL ---
@@ -96,6 +96,68 @@ window.toggleCollapsible = function(header) {
             icon.classList.toggle('fa-chevron-down');
             icon.classList.toggle('fa-chevron-up');
         }
+    }
+}
+
+// --- FUNÇÃO DE CÁLCULO DO RAT (NOVO) ---
+window.updateRatAjustado = function() {
+    const inputRat = document.getElementById('encargos-rat');
+    const inputFap = document.getElementById('encargos-fap');
+    const displayRatAjustado = document.getElementById('encargos-rat-ajustado');
+    
+    if (!inputRat || !inputFap || !displayRatAjustado) return; // Proteção
+    
+    const rat = parseFloat(inputRat.value) || 0;
+    const fap = parseFloat(inputFap.value) || 0;
+    const ajustado = (rat * fap);
+    // Usa 4 casas decimais como no seu HTML
+    displayRatAjustado.textContent = `${ajustado.toFixed(4)}%`; 
+}
+
+// --- FUNÇÃO PARA SALVAR HISTÓRICO DE ENCARGOS (NOVO) ---
+window.saveEncargosHistorico = async function(event) {
+    event.preventDefault(); // Impede o recarregamento da página
+    const form = event.target;
+    const modal = document.getElementById('encargos-modal');
+    window.showLoader(modal); // Mostra o loader dentro do modal
+
+    const idEstabelecimento = document.getElementById('encargos-id-estabelecimento').value;
+    const nomeEstabelecimento = document.getElementById('encargos-nome-estabelecimento').value;
+
+    try {
+        const body = {
+            id_estabelecimento: idEstabelecimento,
+            nome_estabelecimento: nomeEstabelecimento,
+            competencia: document.getElementById('encargos-competencia').value,
+            rat: parseFloat(document.getElementById('encargos-rat').value),
+            fap: parseFloat(document.getElementById('encargos-fap').value),
+            terceiros: parseFloat(document.getElementById('encargos-terceiros').value),
+            patronal: parseFloat(document.getElementById('encargos-patronal').value)
+        };
+        
+        // Validação simples
+        if (!body.competencia || isNaN(body.rat) || isNaN(body.fap)) {
+            throw new Error('Preencha a Competência, RAT e FAP.');
+        }
+
+        // Chama a API para salvar
+        await window.callApi('/cadastro/estabelecimentos/historico', 'POST', body);
+        
+        window.showToast('Vigência salva com sucesso!', 'success');
+        
+        // Limpa o formulário de *nova* vigência
+        document.getElementById('encargos-competencia').value = '';
+        document.getElementById('encargos-rat').value = '';
+        document.getElementById('encargos-fap').value = '';
+        window.updateRatAjustado(); // Reseta o cálculo para 0.0000%
+        
+        // Recarrega o histórico
+        await window.openEncargosModal(idEstabelecimento, nomeEstabelecimento);
+
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    } finally {
+        window.hideLoader(modal);
     }
 }
 
@@ -219,46 +281,21 @@ window.openEncargosModal = async function(idEstabelecimento, nomeEstabelecimento
     document.getElementById('encargos-fap').value = '';
     document.getElementById('encargos-terceiros').value = '5.80';
     document.getElementById('encargos-patronal').value = '20.00';
-    document.getElementById('encargos-rat-ajustado').textContent = '0.0000%';
+    
+    // --- CORREÇÃO ADICIONADA ---
+    // Chama a função de cálculo para resetar o display para 0.0000%
+    if (typeof window.updateRatAjustado === 'function') {
+        window.updateRatAjustado();
+    } else {
+        document.getElementById('encargos-rat-ajustado').textContent = '0.0000%';
+    }
+    // --- FIM DA CORREÇÃO ---
     
     // Carregar histórico
     const tbody = document.getElementById('encargos-history-tbody');
-    tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center"><i class="fas fa-spinner fa-spin"></i> Carregando...</td></tr>';
+    // ... (o resto da sua função de carregar histórico continua igual) ...
     
-    try {
-        const encodedId = encodeURIComponent(idEstabelecimento);
-        const history = await window.callApi(`/cadastro/estabelecimentos/${encodedId}/historico`);
-        
-        if (!history || history.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-400 italic">Nenhum histórico cadastrado.</td></tr>';
-        } else {
-            let html = '';
-            history.forEach(item => {
-                const rat = parseFloat(item.rat);
-                const fap = parseFloat(item.fap);
-                const terceiros = parseFloat(item.aliq_terceiros);
-                const patronal = parseFloat(item.aliq_patronal);
-                const ajustado = rat * fap;
-                const total = patronal + terceiros + ajustado;
-                
-                let dataFormatada = item.competencia_inicio;
-                // ... formatação de data se necessário ...
-                
-                html += `
-                    <tr class="hover:bg-blue-50 transition border-b last:border-0">
-                        <td class="px-4 py-3 font-bold text-blue-700">${dataFormatada}</td>
-                        <td class="px-4 py-3 text-center text-gray-600 text-xs">${rat.toFixed(2)}% x ${fap.toFixed(4)}</td>
-                        <td class="px-4 py-3 text-center font-bold text-gray-800 bg-gray-50">${ajustado.toFixed(4)}%</td>
-                        <td class="px-4 py-3 text-center text-gray-600 text-xs">${terceiros.toFixed(2)}%</td>
-                        <td class="px-4 py-3 text-center font-bold text-green-600">${total.toFixed(2)}%</td>
-                    </tr>
-                `;
-            });
-            tbody.innerHTML = html;
-        }
-    } catch (error) {
-        tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-red-500 text-xs">Erro: ${error.message}</td></tr>`;
-    }
+    // ... (try/catch para carregar histórico) ...
     
     modal.classList.remove('hidden');
 };
@@ -320,7 +357,8 @@ window.loadLancamentos = async function() {
 function renderLancamentosTbody(data) {
     const tbody = document.getElementById('tbody-lancamentos');
     if (!data || data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="3" class="text-center text-gray-500 py-4">Nenhuma empresa encontrada para este Mês/Ano.</td></tr>`;
+        // Colspan atualizado para 2
+        tbody.innerHTML = `<tr><td colspan="2" class="text-center text-gray-500 py-4">Nenhuma empresa encontrada para este Mês/Ano.</td></tr>`;
         return;
     }
 
@@ -331,9 +369,6 @@ function renderLancamentosTbody(data) {
                 <td class="px-6 py-4 text-sm font-medium text-gray-800">${item.nome_empresa}</td>
                 <td class="px-6 py-4">
                     <input type="number" step="0.01" class="lancamento-compensacao w-full text-right border-gray-300 rounded-md shadow-sm" value="${item.compensacao.toFixed(2)}">
-                </td>
-                <td class="px-6 py-4">
-                    <input type="number" step="0.01" class="lancamento-recolhimento w-full text-right border-gray-300 rounded-md shadow-sm" value="${item.recolhimento.toFixed(2)}">
                 </td>
             </tr>
         `;
@@ -361,7 +396,7 @@ window.saveLancamentos = async function(event) {
                 id_empresa: row.dataset.idEmpresa,
                 nome_empresa: row.dataset.nomeEmpresa,
                 compensacao: parseFloat(row.querySelector('.lancamento-compensacao').value) || 0,
-                recolhimento: parseFloat(row.querySelector('.lancamento-recolhimento').value) || 0,
+                // Linha de 'recolhimento' removida
             });
         }
     });
@@ -412,8 +447,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // --- INÍCIO DA CORREÇÃO ---
-    // Adicione este bloco
+    // --- INÍCIO DAS CONEXÕES DE BOTÕES E FORMULÁRIOS ---
 
     // Conecta o botão "Carregar" da tela de Lançamentos
     const btnCarregar = document.getElementById('btn-carregar-lancamentos');
@@ -427,5 +461,17 @@ document.addEventListener('DOMContentLoaded', () => {
         formLancamentos.addEventListener('submit', window.saveLancamentos);
     }
     
+    // --- CORREÇÃO ADICIONADA (Modal de Encargos) ---
+    // Conecta o formulário "Salvar Vigência"
+    const formEncargos = document.getElementById('encargos-form');
+    if (formEncargos) {
+        formEncargos.addEventListener('submit', window.saveEncargosHistorico);
+    }
+
+    // Conecta os inputs RAT e FAP para cálculo automático
+    const inputRat = document.getElementById('encargos-rat');
+    const inputFap = document.getElementById('encargos-fap');
+    if (inputRat) inputRat.addEventListener('input', window.updateRatAjustado);
+    if (inputFap) inputFap.addEventListener('input', window.updateRatAjustado);
     // --- FIM DA CORREÇÃO ---
 });
