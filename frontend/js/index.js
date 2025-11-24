@@ -1,8 +1,17 @@
 // js/index.js
 
+
+// --- VERIFICAÇÃO DE LOGIN (NOVO) ---
+// Verifica se existe um token salvo. Se não existir e não estiver na tela de login/reset, redireciona.
+const token = localStorage.getItem('token');
+if (!token && !window.location.href.includes('login.html') && !window.location.href.includes('reset-password.html')) {
+    window.location.href = 'login.html';
+}
+
 // --- URL BASE DA API ---
+// Certifique-se de que este IP está correto para o seu servidor
 const API_BASE_URL = 'http://192.168.8.11:3000'; 
-const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY';
+const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY'; // Mantenha sua chave aqui se usar AI
 
 // --- ESTADO GLOBAL ---
 window.currentReportType = 'ano-mes';
@@ -14,21 +23,31 @@ window.fullReportsData = {};
 window.callApi = async function(endpoint, method = 'GET', body = null) {
     const options = {
         method: method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}` // <--- O SEGREDO ESTÁ AQUI
+        },
     };
     if (body) options.body = JSON.stringify(body);
 
     try {
         const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
+
+        // Se o token for inválido (401) ou proibido (403)
+        if (response.status === 401 || response.status === 403) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            window.location.href = 'login.html';
+            return;
+        }
+
         if (!response.ok) {
-            // Tenta ler o erro como JSON, se falhar, lê como texto
+            // ... (resto do seu tratamento de erro original) ...
             let errorMsg = `Erro da API: ${response.statusText}`;
             try {
                 const errorData = await response.json();
                 errorMsg = errorData.message || errorMsg;
-            } catch (e) {
-                // Se não for JSON (ex: 404 HTML), usa o status text
-            }
+            } catch (e) {}
             throw new Error(errorMsg);
         }
         return await response.json();
@@ -194,12 +213,12 @@ window.switchView = function(viewId) {
         const cadastroType = viewId.split('-')[1];
         if (cadastroType === 'cc') window.loadCCData();
         else if (cadastroType === 'lotacoes') window.loadLotacoesStatus();
+        else if (cadastroType === 'usuarios') window.loadUsers(); // <--- ADICIONE ISSO
         else if (['empresas', 'estabelecimentos', 'tiposfolha'].includes(cadastroType)) window.loadGenericCadastro(cadastroType);
     }
 };
 
 // --- LÓGICA DE CADASTROS SIMPLES ---
-// Ajuste as chaves aqui se o nome da rota for diferente (ex: 'tipos_folha' vs 'tiposfolha')
 const sheetNames = { 
     empresas: 'Empresas', 
     estabelecimentos: 'Estabelecimentos', 
@@ -213,11 +232,7 @@ window.loadGenericCadastro = async function(type) {
     
     window.showLoader(container);
     try {
-        // Verifica se a rota 'tiposfolha' deve ser ajustada
         let route = type;
-        // Exemplo: se sua API usa 'tipos_folha' em vez de 'tiposfolha', descomente abaixo:
-        // if (type === 'tiposfolha') route = 'tipos_folha'; 
-
         const data = await window.callApi(`/cadastro/${route}`);
         if (type === 'estabelecimentos') {
             renderEstabelecimentosList(container, data);
@@ -239,7 +254,6 @@ function renderGenericList(container, title, data) {
     } else {
         listHTML += '<ul class="divide-y divide-gray-200 max-h-96 overflow-y-auto">';
         data.forEach(item => {
-            // Tenta encontrar a propriedade correta para exibir
             const text = typeof item === 'string' ? item : (item.nome || item.descricao || item.tipo || JSON.stringify(item));
             listHTML += `<li class="py-3 flex justify-between items-center"><span class="text-gray-800">${text}</span></li>`;
         });
@@ -282,20 +296,44 @@ window.openEncargosModal = async function(idEstabelecimento, nomeEstabelecimento
     document.getElementById('encargos-terceiros').value = '5.80';
     document.getElementById('encargos-patronal').value = '20.00';
     
-    // --- CORREÇÃO ADICIONADA ---
     // Chama a função de cálculo para resetar o display para 0.0000%
     if (typeof window.updateRatAjustado === 'function') {
         window.updateRatAjustado();
     } else {
         document.getElementById('encargos-rat-ajustado').textContent = '0.0000%';
     }
-    // --- FIM DA CORREÇÃO ---
     
     // Carregar histórico
     const tbody = document.getElementById('encargos-history-tbody');
-    // ... (o resto da sua função de carregar histórico continua igual) ...
-    
-    // ... (try/catch para carregar histórico) ...
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-gray-500"><i class="fas fa-spinner fa-spin"></i> Carregando histórico...</td></tr>';
+
+    try {
+        const historico = await window.callApi(`/cadastro/estabelecimentos/${idEstabelecimento}/historico`);
+        
+        if (!historico || historico.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-gray-500 italic">Nenhum histórico cadastrado.</td></tr>';
+        } else {
+            tbody.innerHTML = historico.map(h => {
+                const rat = parseFloat(h.rat);
+                const fap = parseFloat(h.fap);
+                const ajustado = (rat * fap).toFixed(4);
+                const total = (parseFloat(h.aliq_patronal) + parseFloat(h.aliq_terceiros) + parseFloat(ajustado)).toFixed(2);
+                
+                return `
+                    <tr class="hover:bg-gray-50 border-b last:border-b-0">
+                        <td class="px-4 py-3 text-gray-800 font-medium">${h.competencia_inicio.split('-').reverse().join('/')}</td>
+                        <td class="px-4 py-3 text-center text-gray-600">${h.rat} x ${h.fap}</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-600">${ajustado}%</td>
+                        <td class="px-4 py-3 text-center text-gray-600">${h.aliq_terceiros}%</td>
+                        <td class="px-4 py-3 text-center font-bold text-green-600 bg-green-50 rounded-lg">${total}%</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center py-4 text-red-500">Erro ao carregar histórico.</td></tr>`;
+        window.showToast('Erro ao carregar histórico.', 'error');
+    }
     
     modal.classList.remove('hidden');
 };
@@ -341,14 +379,14 @@ window.loadLancamentos = async function() {
     }
     
     const [ano, mes] = mesAnoInput.value.split('-');
-    window.showLoader(tbody.parentElement); // Mostra loader na tabela
+    window.showLoader(tbody.parentElement);
 
     try {
         const data = await window.callApi(`/lancamentos/encargos?mes=${mes}&ano=${ano}`);
         renderLancamentosTbody(data);
     } catch (err) {
         window.showToast(err.message, 'error');
-        tbody.innerHTML = `<tr><td colspan="3" class="text-center text-red-500 py-4">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-red-500 py-4">${err.message}</td></tr>`;
     } finally {
         window.hideLoader(tbody.parentElement);
     }
@@ -356,19 +394,37 @@ window.loadLancamentos = async function() {
 
 function renderLancamentosTbody(data) {
     const tbody = document.getElementById('tbody-lancamentos');
+    
     if (!data || data.length === 0) {
-        // Colspan atualizado para 2
-        tbody.innerHTML = `<tr><td colspan="2" class="text-center text-gray-500 py-4">Nenhuma empresa encontrada para este Mês/Ano.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-gray-500 py-4">Nenhuma empresa encontrada para este Mês/Ano.</td></tr>`;
         return;
     }
 
     let html = '';
     data.forEach(item => {
+        const valInss = (item.inss || 0).toFixed(2);
+        const valRural = (item.comercializacao_rural || 0).toFixed(2);
+        const valRetencao = (item.retencao_1162 || 0).toFixed(2);
+        const valCompensacao = (item.compensacao || 0).toFixed(2);
+
         html += `
             <tr class="hover:bg-gray-50" data-id-empresa="${item.id_empresa}" data-nome-empresa="${item.nome_empresa}">
                 <td class="px-6 py-4 text-sm font-medium text-gray-800">${item.nome_empresa}</td>
+                
                 <td class="px-6 py-4">
-                    <input type="number" step="0.01" class="lancamento-compensacao w-full text-right border-gray-300 rounded-md shadow-sm" value="${item.compensacao.toFixed(2)}">
+                    <input type="number" step="0.01" class="lancamento-inss w-full text-right border border-cyan-300 rounded-md shadow-sm p-1 focus:ring-cyan-500 focus:border-cyan-500 font-bold text-cyan-700" value="${valInss}">
+                </td>
+
+                <td class="px-6 py-4">
+                    <input type="number" step="0.01" class="lancamento-rural w-full text-right border border-gray-300 rounded-md shadow-sm p-1 focus:ring-blue-500 focus:border-blue-500" value="${valRural}">
+                </td>
+
+                <td class="px-6 py-4">
+                    <input type="number" step="0.01" class="lancamento-retencao w-full text-right border border-gray-300 rounded-md shadow-sm p-1 focus:ring-blue-500 focus:border-blue-500" value="${valRetencao}">
+                </td>
+
+                <td class="px-6 py-4">
+                    <input type="number" step="0.01" class="lancamento-compensacao w-full text-right border border-gray-300 rounded-md shadow-sm p-1 focus:ring-blue-500 focus:border-blue-500" value="${valCompensacao}">
                 </td>
             </tr>
         `;
@@ -377,7 +433,7 @@ function renderLancamentosTbody(data) {
 }
 
 window.saveLancamentos = async function(event) {
-    event.preventDefault(); // Impede o form de recarregar a página
+    event.preventDefault(); 
     const mesAnoInput = document.getElementById('lancamento-mes');
     const tbody = document.getElementById('tbody-lancamentos');
     const form = document.getElementById('form-lancamentos');
@@ -395,8 +451,10 @@ window.saveLancamentos = async function(event) {
             lancamentos.push({
                 id_empresa: row.dataset.idEmpresa,
                 nome_empresa: row.dataset.nomeEmpresa,
-                compensacao: parseFloat(row.querySelector('.lancamento-compensacao').value) || 0,
-                // Linha de 'recolhimento' removida
+                inss: parseFloat(row.querySelector('.lancamento-inss').value) || 0, 
+                comercializacao_rural: parseFloat(row.querySelector('.lancamento-rural').value) || 0,
+                retencao_1162: parseFloat(row.querySelector('.lancamento-retencao').value) || 0,
+                compensacao: parseFloat(row.querySelector('.lancamento-compensacao').value) || 0
             });
         }
     });
@@ -420,6 +478,33 @@ window.saveLancamentos = async function(event) {
 
 // INICIALIZAÇÃO GERAL
 document.addEventListener('DOMContentLoaded', () => {
+    
+    // --- INÍCIO DO CÓDIGO NOVO (VERIFICAÇÃO DE ADMIN) ---
+    // Coloque isto EXATAMENTE AQUI, na primeira linha dentro do listener
+    const userData = JSON.parse(localStorage.getItem('user') || '{}');
+    
+    // Verifica se é admin (aceita 1 ou true)
+    const isAdmin = userData.is_admin === 1 || userData.is_admin === true;
+
+    // Se NÃO for admin, esconde o menu e bloqueia o acesso
+    if (!isAdmin) {
+        // 1. Esconde o link no menu
+        const userMenuLink = document.querySelector('a[data-view="cadastros-usuarios"]');
+        if (userMenuLink) {
+            // Esconde o <li> pai do link
+            userMenuLink.parentElement.style.display = 'none'; 
+        }
+        
+        // 2. Protege a função de navegação (Monkey Patching)
+        const originalSwitchView = window.switchView;
+        window.switchView = function(viewId) {
+            if (viewId === 'cadastros-usuarios' && !isAdmin) {
+                window.showToast('Acesso negado. Apenas administradores.', 'error');
+                return;
+            }
+            originalSwitchView(viewId);
+        }
+    }
     // Carregar view inicial
     window.switchView('inicio');
     
@@ -461,7 +546,6 @@ document.addEventListener('DOMContentLoaded', () => {
         formLancamentos.addEventListener('submit', window.saveLancamentos);
     }
     
-    // --- CORREÇÃO ADICIONADA (Modal de Encargos) ---
     // Conecta o formulário "Salvar Vigência"
     const formEncargos = document.getElementById('encargos-form');
     if (formEncargos) {
@@ -473,5 +557,129 @@ document.addEventListener('DOMContentLoaded', () => {
     const inputFap = document.getElementById('encargos-fap');
     if (inputRat) inputRat.addEventListener('input', window.updateRatAjustado);
     if (inputFap) inputFap.addEventListener('input', window.updateRatAjustado);
-    // --- FIM DA CORREÇÃO ---
 });
+
+// --- GESTÃO DE USUÁRIOS (ATUALIZADO) ---
+
+window.loadUsers = async function() {
+    const tbody = document.getElementById('tbody-usuarios');
+    window.showLoader(tbody.parentElement);
+    
+    try {
+        const users = await window.callApi('/usuarios');
+        
+        if (users.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-gray-500">Nenhum usuário encontrado.</td></tr>';
+            return;
+        }
+
+        let html = '';
+        users.forEach(u => {
+            const roleBadge = u.is_admin ? 
+                '<span class="bg-purple-100 text-purple-800 text-xs font-bold px-2 py-1 rounded">Admin</span>' : 
+                '<span class="bg-gray-100 text-gray-800 text-xs font-bold px-2 py-1 rounded">Comum</span>';
+
+            // Stringify seguro para passar no onclick
+            const userObj = JSON.stringify(u).replace(/"/g, '&quot;');
+
+            html += `
+                <tr class="hover:bg-gray-50">
+                    <td class="px-6 py-4 text-sm text-gray-500">#${u.id}</td>
+                    <td class="px-6 py-4 text-sm font-medium text-gray-900">${u.nome}</td>
+                    <td class="px-6 py-4 text-sm text-gray-600">${u.email}</td>
+                    <td class="px-6 py-4 text-center">${roleBadge}</td>
+                    <td class="px-6 py-4 text-center space-x-2">
+                        <button onclick="window.editUser(${userObj})" class="text-blue-600 hover:text-blue-900 font-bold text-sm" title="Editar">
+                            <i class="fas fa-edit"></i>
+                        </button>
+                        <button onclick="window.deleteUser(${u.id})" class="text-red-600 hover:text-red-900 font-bold text-sm" title="Excluir">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+        });
+        tbody.innerHTML = html;
+
+    } catch (err) {
+        window.showToast('Erro ao carregar usuários.', 'error');
+    } finally {
+        window.hideLoader(tbody.parentElement);
+    }
+};
+
+// Preenche o formulário para edição
+window.editUser = function(user) {
+    // ATUALIZADO: Usando os novos IDs com prefixo 'gestao-'
+    document.getElementById('gestao-user-id').value = user.id;
+    document.getElementById('gestao-user-nome').value = user.nome;
+    document.getElementById('gestao-user-email').value = user.email;
+    document.getElementById('gestao-user-senha').value = ''; 
+    document.getElementById('gestao-user-is-admin').checked = (user.is_admin === 1);
+    
+    document.getElementById('user-form-title').textContent = 'Editar Usuário #' + user.id;
+    document.getElementById('btn-save-user').innerHTML = '<i class="fas fa-save mr-2"></i> Atualizar';
+    document.getElementById('btn-cancel-edit').classList.remove('hidden');
+    document.getElementById('gestao-user-email').focus();
+};
+
+// Reseta o formulário
+window.resetUserForm = function() {
+    document.getElementById('form-usuario').reset();
+    // ATUALIZADO: Usando o novo ID
+    document.getElementById('gestao-user-id').value = '';
+    
+    document.getElementById('user-form-title').textContent = 'Cadastrar Novo Usuário';
+    document.getElementById('btn-save-user').innerHTML = '<i class="fas fa-plus mr-2"></i> Adicionar';
+    document.getElementById('btn-cancel-edit').classList.add('hidden');
+};
+
+// Salva (Cria ou Edita)
+window.saveUser = async function(e) {
+    e.preventDefault(); // Isso aqui impede a página de recarregar!
+    
+    // ATENÇÃO: Tem que usar os IDs novos 'gestao-...'
+    const id = document.getElementById('gestao-user-id').value;
+    const nome = document.getElementById('gestao-user-nome').value;
+    const email = document.getElementById('gestao-user-email').value;
+    const senha = document.getElementById('gestao-user-senha').value;
+    const isAdmin = document.getElementById('gestao-user-is-admin').checked ? 1 : 0;
+    
+    try {
+        if (id) {
+            // EDIÇÃO (PUT)
+            await window.callApi(`/usuarios/${id}`, 'PUT', { nome, email, senha, is_admin: isAdmin });
+            window.showToast('Usuário atualizado!', 'success');
+            window.resetUserForm();
+        } else {
+            // CRIAÇÃO (POST)
+            await window.callApi('/auth/register', 'POST', { nome, email, password: senha });
+            
+            if (isAdmin) {
+                // Se for admin, faz o update logo em seguida (solução rápida para garantir permissão)
+                const users = await window.callApi('/usuarios');
+                const newUser = users.find(u => u.email === email);
+                if(newUser) {
+                    await window.callApi(`/usuarios/${newUser.id}`, 'PUT', { nome, email, is_admin: 1 });
+                }
+            }
+            window.showToast('Usuário criado!', 'success');
+            document.getElementById('form-usuario').reset();
+        }
+        
+        window.loadUsers();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
+};
+
+window.deleteUser = async function(id) {
+    if(!confirm('Tem certeza?')) return;
+    try {
+        await window.callApi(`/usuarios/${id}`, 'DELETE');
+        window.showToast('Usuário removido.', 'success');
+        window.loadUsers();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
+};

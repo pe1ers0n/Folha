@@ -1200,49 +1200,41 @@ router.post('/reports/folha-vs-colaboradores', async (req, res) => {
     // 1. Buscar dados para a tela de Lançamentos (Lista empresas e valores salvos)
 router.get('/lancamentos/encargos', async (req, res) => {
     const { mes, ano } = req.query;
-    
     if (!mes || !ano) return res.status(400).json({ message: 'Mês e Ano são obrigatórios.' });
-
     const competencia = `${ano}-${mes}-01`;
 
     try {
-        const queryDW = `
-            SELECT DISTINCT 
-                emp.id_empresa, 
-                emp.empresa AS nome_empresa
-            FROM gold.f_fortes_pagamento f
-            JOIN gold.d_fortes_empresa emp 
-                ON TRIM(CAST(f.id_empresa AS TEXT)) = TRIM(CAST(emp.id_empresa AS TEXT))
-            WHERE EXTRACT(MONTH FROM f.data) = $1 
-              AND EXTRACT(YEAR FROM f.data) = $2
-            ORDER BY emp.empresa
-        `;
+        // (Query do DW permanece igual...)
+        const queryDW = `SELECT DISTINCT emp.id_empresa, emp.empresa AS nome_empresa FROM gold.f_fortes_pagamento f JOIN gold.d_fortes_empresa emp ON TRIM(CAST(f.id_empresa AS TEXT)) = TRIM(CAST(emp.id_empresa AS TEXT)) WHERE EXTRACT(MONTH FROM f.data) = $1 AND EXTRACT(YEAR FROM f.data) = $2 ORDER BY emp.empresa`;
         const { rows: empresasDW } = await dbDW.query(queryDW, [mes, ano]);
 
-        if (empresasDW.length === 0) {
-            return res.json([]); 
-        }
+        if (empresasDW.length === 0) return res.json([]);
 
-        // Query MySQL atualizada (não busca 'valor_recolhimento')
+        // --- ALTERAÇÃO AQUI: Buscar colunas novas ---
         const [lancamentosSalvos] = await dbApp.query(`
-            SELECT id_empresa, valor_compensacao 
+            SELECT 
+                id_empresa, 
+                valor_inss, -- NOVO
+                valor_compensacao,
+                valor_comercializacao_rural,
+                valor_retencao_1162
             FROM lancamentos_encargos_empresa 
             WHERE competencia = ?
         `, [competencia]);
 
         const resultado = empresasDW.map(emp => {
             const salvo = lancamentosSalvos.find(l => String(l.id_empresa) === String(emp.id_empresa));
-            
             return {
                 id_empresa: emp.id_empresa,
                 nome_empresa: emp.nome_empresa,
+                inss: salvo ? parseFloat(salvo.valor_inss) : 0.00, // NOVO
                 compensacao: salvo ? parseFloat(salvo.valor_compensacao) : 0.00,
-                // Linha de 'recolhimento' removida
+                comercializacao_rural: salvo ? parseFloat(salvo.valor_comercializacao_rural) : 0.00,
+                retencao_1162: salvo ? parseFloat(salvo.valor_retencao_1162) : 0.00
             };
         });
 
         res.json(resultado);
-
     } catch (error) {
         handleError(res, error, 'Erro ao buscar lançamentos de encargos.');
     }
@@ -1255,15 +1247,26 @@ router.post('/lancamentos/encargos', async (req, res) => {
     
     try {
         for (const item of lancamentos) {
-            // Query MySQL atualizada (não salva 'valor_recolhimento')
+            // --- ALTERAÇÃO AQUI: Insert/Update com novos campos ---
             await dbApp.query(`
                 INSERT INTO lancamentos_encargos_empresa 
-                (id_empresa, nome_empresa, competencia, valor_compensacao, data_atualizacao)
-                VALUES (?, ?, ?, ?, NOW())
+                (id_empresa, nome_empresa, competencia, valor_inss, valor_compensacao, valor_comercializacao_rural, valor_retencao_1162, data_atualizacao)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
                 ON DUPLICATE KEY UPDATE 
+                    valor_inss = VALUES(valor_inss), -- NOVO
                     valor_compensacao = VALUES(valor_compensacao),
+                    valor_comercializacao_rural = VALUES(valor_comercializacao_rural),
+                    valor_retencao_1162 = VALUES(valor_retencao_1162),
                     data_atualizacao = NOW()
-            `, [item.id_empresa, item.nome_empresa, competencia, item.compensacao]); // <-- 'recolhimento' removido do array
+            `, [
+                item.id_empresa, 
+                item.nome_empresa, 
+                competencia, 
+                item.inss,
+                item.compensacao,
+                item.comercializacao_rural,
+                item.retencao_1162
+            ]);
         }
         res.json({ message: 'Lançamentos salvos com sucesso!' });
     } catch (error) {
@@ -1290,7 +1293,13 @@ router.post('/reports/analise-encargos', async (req, res) => {
                 EXTRACT(MONTH FROM f.data) as mes,
                 EXTRACT(YEAR FROM f.data) as ano,
                 
-                SUM(f.provento) as total_folha,
+                -- Soma de Proventos (usando filtro de adiantamento se necessário)
+                SUM(CASE 
+                    WHEN d_tf.descricao NOT ILIKE '%ADIANTAMENTO%' THEN f.provento 
+                    ELSE 0 
+                END) as total_folha,
+
+                -- Soma de FGTS (Automático)
                 SUM(CASE WHEN d_evt.evento ILIKE '%FGTS%' THEN f.informacao ELSE 0 END) as total_fgts
 
             FROM gold.f_fortes_pagamento f
@@ -1301,78 +1310,80 @@ router.post('/reports/analise-encargos', async (req, res) => {
         
         const { rows: dadosDW } = await dbDW.query(sqlDW, params);
 
-        // PASSO 2: Buscar Histórico de Alíquotas no Banco Local (MySQL)
-        const [regrasAliquota] = await dbApp.query(`
-            SELECT id_estabelecimento, competencia_inicio, aliq_patronal, rat, fap, aliq_terceiros
-            FROM historico_encargos_estabelecimento
-            ORDER BY competencia_inicio DESC
-        `);
-
-        // PASSO 3: Buscar Compensações/Recolhimentos manuais
+        // PASSO 2: Buscar Lançamentos Manuais (INSS, Compensação, etc.)
         const yearForMySQL = (year && year !== 'Todos') ? year : new Date().getFullYear();
-            
         const [lancamentosManuais] = await dbApp.query(`
-            SELECT id_empresa, competencia, valor_compensacao
+            SELECT 
+                id_empresa, 
+                competencia, 
+                valor_inss, -- Agora buscamos o INSS daqui
+                valor_compensacao,
+                valor_comercializacao_rural,
+                valor_retencao_1162
             FROM lancamentos_encargos_empresa
             WHERE YEAR(competencia) = ?
-        `, [yearForMySQL]); // Só precisamos da compensação
+        `, [yearForMySQL]);
 
-        // PASSO 4: Processamento em Memória (Node.js)
+        // PASSO 3: Consolidar Dados
         const consolidado = {}; 
+        
+        // Primeiro, processa os dados automáticos (Folha e FGTS)
         dadosDW.forEach(row => {
             const chave = `${row.ano}|${row.mes}`;
-            const dataMovimento = new Date(row.ano, row.mes - 1, 1); 
             
-            const regra = regrasAliquota.find(r => 
-                String(r?.id_estabelecimento).trim() == String(row?.id_estabelecimento).trim() && 
-                new Date(r.competencia_inicio) <= dataMovimento
-            );
-            
-            const patronal = regra ? parseFloat(regra.aliq_patronal) : 20.0;
-            const rat = regra ? parseFloat(regra.rat) : 0.0;
-            const fap = regra ? parseFloat(regra.fap) : 1.0;
-            const terceiros = regra ? parseFloat(regra.aliq_terceiros) : 0.0;
-            const isEncargoZero = (regra && patronal === 0 && rat === 0 && terceiros === 0);
-            const percentualTotal = patronal + terceiros + (rat * fap);
-            const valorINSS = (parseFloat(row.total_folha) * percentualTotal) / 100;
-
             if (!consolidado[chave]) {
                 consolidado[chave] = {
                     mes: row.mes,
                     ano: row.ano,
                     folha: 0,
                     fgts: 0,
-                    inss: 0
+                    inss: 0,
+                    compensacao: 0,
+                    // Outros campos manuais para soma futura se precisar
+                    rural: 0,
+                    retencao: 0
                 };
             }
             
             consolidado[chave].folha += parseFloat(row.total_folha);
-            consolidado[chave].inss += valorINSS; 
-            if (!isEncargoZero) {
-                consolidado[chave].fgts += parseFloat(row.total_fgts);
-            }
+            consolidado[chave].fgts += parseFloat(row.total_fgts);
         });
 
-        // PASSO 5: Unir com Lançamentos Manuais e Formatar Saída
-        const relatorioFinal = Object.values(consolidado).map(item => {
-            const dataComp = new Date(item.ano, item.mes - 1, 1).toISOString().slice(0, 10);
+        // Segundo, soma os dados manuais (INSS e Compensação)
+        // Fazemos isso iterando sobre os lançamentos para garantir que pegamos
+        // valores de empresas que talvez não tenham folha no DW naquele mês, mas tenham guia.
+        
+        // Nota: A lógica abaixo assume que queremos exibir apenas meses que têm dados no DW.
+        // Se quisermos exibir meses que só têm lançamento manual, precisaríamos criar chaves novas.
+        // Para simplificar, vamos iterar sobre o 'consolidado' e buscar os manuais correspondentes.
+        
+        Object.keys(consolidado).forEach(chave => {
+            const [ano, mes] = chave.split('|');
+            const dataComp = new Date(ano, mes - 1, 1).toISOString().slice(0, 10);
+            
+            // Filtra lançamentos manuais para este mês (de todas as empresas)
             const manuaisDoMes = lancamentosManuais.filter(l => 
                 new Date(l.competencia).toISOString().slice(0, 10) === dataComp
             );
+
+            // Soma os valores manuais
+            const totalInssManual = manuaisDoMes.reduce((acc, m) => acc + parseFloat(m.valor_inss || 0), 0);
+            const totalCompensacao = manuaisDoMes.reduce((acc, m) => acc + parseFloat(m.valor_compensacao || 0), 0);
             
-            // --- CORREÇÃO DA LÓGICA ---
-            // Compensação é o valor lançado
-            const compensacao = manuaisDoMes.reduce((acc, m) => acc + parseFloat(m.valor_compensacao), 0);
-            // Recolhimento é o cálculo
-            const recolhimento = item.inss - compensacao; 
-            const totalEncargos = item.inss + item.fgts;
-            // --- FIM DA CORREÇÃO ---
+            // Atribui ao consolidado
+            consolidado[chave].inss = totalInssManual;
+            consolidado[chave].compensacao = totalCompensacao;
+        });
+
+        // PASSO 4: Formatar Saída Final
+        const relatorioFinal = Object.values(consolidado).map(item => {
+            const recolhimento = item.inss - item.compensacao; 
+            const totalEncargos = item.inss + item.fgts; 
 
             return {
                 ...item,
                 total_encargos: totalEncargos,
-                compensacao: compensacao,
-                recolhimento: recolhimento, // <-- Envia o valor calculado
+                recolhimento: recolhimento,
             };
         });
 
@@ -1380,6 +1391,63 @@ router.post('/reports/analise-encargos', async (req, res) => {
 
     } catch (error) {
         handleError(res, error, 'Erro ao gerar relatório de encargos.');
+    }
+});
+
+// --- GESTÃO DE USUÁRIOS (ATUALIZADO) ---
+
+// Listar usuários (Trazendo is_admin)
+router.get('/usuarios', async (req, res) => {
+    try {
+        // Apenas Admins podem listar (opcional, mas recomendado)
+        // if (!req.user.is_admin) return res.status(403).json({ message: 'Acesso negado.' });
+
+        const [rows] = await dbApp.query('SELECT id, nome, email, is_admin, data_cadastro FROM usuarios ORDER BY nome');
+        res.json(rows);
+    } catch (error) {
+        handleError(res, error, 'Erro ao buscar usuários.');
+    }
+});
+
+// Editar Usuário (NOVO)
+router.put('/usuarios/:id', async (req, res) => {
+    const { id } = req.params;
+    const { nome, email, senha, is_admin } = req.body;
+    
+    try {
+        // 1. Se enviou senha, criptografa. Se não, mantém a atual.
+        let query = 'UPDATE usuarios SET nome = ?, email = ?, is_admin = ?';
+        let params = [nome, email, is_admin];
+
+        if (senha && senha.trim() !== '') {
+            const bcrypt = require('bcryptjs');
+            const hashedPassword = await bcrypt.hash(senha, 10);
+            query += ', senha = ?';
+            params.push(hashedPassword);
+        }
+
+        query += ' WHERE id = ?';
+        params.push(id);
+
+        await dbApp.query(query, params);
+        res.json({ message: 'Usuário atualizado com sucesso.' });
+
+    } catch (error) {
+        handleError(res, error, 'Erro ao atualizar usuário.');
+    }
+});
+
+// Excluir usuário
+router.delete('/usuarios/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        if (req.user && req.user.id == id) {
+             return res.status(400).json({ message: 'Você não pode excluir seu próprio usuário.' });
+        }
+        await dbApp.query('DELETE FROM usuarios WHERE id = ?', [id]);
+        res.json({ message: 'Usuário removido com sucesso.' });
+    } catch (error) {
+        handleError(res, error, 'Erro ao excluir usuário.');
     }
 });
 
