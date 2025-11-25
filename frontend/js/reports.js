@@ -624,82 +624,201 @@ function renderCcLotacaoColaboradorReport(data, summary, valueType) {
 function renderFolhaVsColaboradoresReport(data, valueType) {
     const container = document.getElementById('report-folha-vs-colaboradores');
     if (!container) return;
-    container.innerHTML = `<div class="report-card">
-        <h3 class="text-xl font-semibold text-gray-800 mb-4">Relatório Valores Folha x Colaboradores</h3>
-        <div class="h-96"><canvas id="folhaVsColaboradoresChart"></canvas></div>
-    </div>`;
+
+    // --- LÓGICA DE ORDENAÇÃO (NOVO) ---
+    // Ordena os datasets pelo valor total acumulado (do Menor para o Maior).
+    // Assim, os menores valores ficam na base da barra (índice 0 = base).
+    if (data && data.datasets) {
+        data.datasets.sort((a, b) => {
+            const sumA = a.data.reduce((acc, val) => acc + val, 0);
+            const sumB = b.data.reduce((acc, val) => acc + val, 0);
+            return sumA - sumB;
+        });
+    }
+    // ----------------------------------
+
+    // 1. Cálculos Iniciais (baseados nos dados já ordenados)
+    let initialTotalValor = 0;
+    let totalColaboradoresAccum = 0;
+    let mesesComDados = 0;
+
+    if (data && data.datasets) {
+        data.datasets.forEach(ds => {
+            initialTotalValor += ds.data.reduce((a, b) => a + b, 0);
+        });
+        
+        const colabData = data.qtdData || []; 
+        mesesComDados = colabData.filter(v => v > 0).length || 1;
+        totalColaboradoresAccum = colabData.reduce((a, b) => a + b, 0);
+    }
+    
+    const mediaColaboradores = Math.round(totalColaboradoresAccum / (mesesComDados > 0 ? mesesComDados : 1));
+
+    // 2. HTML do Card
+    container.innerHTML = `
+        <div class="report-card">
+            <div class="flex justify-between items-start mb-4">
+                <div>
+                    <h3 class="text-xl font-semibold text-gray-800">Relatório Valores Folha x Colaboradores (Por Tipo)</h3>
+                    <p class="text-sm text-gray-500">Clique na legenda para filtrar os totais</p>
+                </div>
+                <div class="bg-indigo-50 px-6 py-3 rounded-xl border border-indigo-100 text-right shadow-sm transition-all duration-300">
+                    <div class="text-xs font-bold text-indigo-500 uppercase tracking-wide">Total do Período (${valueType})</div>
+                    <div class="text-2xl font-extrabold text-indigo-700" id="bn-folha-vs-colab-total">${window.formatCurrency(initialTotalValor)}</div>
+                    <div class="text-xs text-gray-600 mt-1">Média de ${mediaColaboradores} colab./mês</div>
+                </div>
+            </div>
+            <div class="h-96"><canvas id="folhaVsColaboradoresChart"></canvas></div>
+        </div>`;
     
     const chartId = 'folhaVsColaboradoresChart';
-    const canvas = document.getElementById(chartId);
     
-    if (!data || data.labels.length === 0) {
+    if (!data || !data.datasets || data.datasets.length === 0) {
         container.querySelector('.report-card').innerHTML = `<h3 class="text-xl font-semibold text-gray-800 mb-4">Relatório Valores Folha x Colaboradores</h3><p class="text-center text-gray-500 h-full flex items-center justify-center">Sem dados para os filtros selecionados.</p>`;
         if (window.activeCharts[chartId]) window.activeCharts[chartId].destroy();
         return;
     }
     
     if (window.activeCharts[chartId]) window.activeCharts[chartId].destroy();
-    const ctx = canvas.getContext('2d');
-    window.activeCharts[chartId] = new Chart(ctx, {
+    const ctx = document.getElementById(chartId).getContext('2d');
+
+    const colors = [
+        '#3b82f6', '#10b981', '#f59e0b', '#ef4444', 
+        '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6'
+    ];
+
+    // Prepara datasets de Barra (Agora já ordenados)
+    const barDatasets = data.datasets.map((ds, index) => ({
         type: 'bar',
+        label: ds.label,
+        data: ds.data,
+        backgroundColor: colors[index % colors.length],
+        stack: 'folhaStack',
+        order: 2,
+        datalabels: {
+            color: '#ffffff',
+            font: { weight: 'bold', size: 10 },
+            formatter: function(value) {
+                return value > 0 ? window.formatAbbreviated(value) : '';
+            },
+            display: function(context) {
+                return context.dataset.data[context.dataIndex] > 0; 
+            }
+        }
+    }));
+
+    // Prepara dataset de Linha
+    const lineDataset = {
+        type: 'line',
+        label: 'Qtd. Colaboradores',
+        data: data.qtdData,
+        borderColor: '#b91c1c',
+        backgroundColor: '#b91c1c',
+        borderWidth: 3,
+        pointBackgroundColor: '#fff',
+        pointBorderColor: '#b91c1c',
+        pointRadius: 4,
+        yAxisID: 'y1', 
+        tension: 0.1,
+        order: 1,
+        datalabels: {
+            align: 'top',
+            anchor: 'start',
+            offset: 6,
+            color: '#b91c1c',
+            backgroundColor: 'rgba(255, 255, 255, 0.9)',
+            borderRadius: 4,
+            font: { weight: 'bold', size: 11 },
+            formatter: function(value) {
+                return value > 0 ? value : '';
+            }
+        }
+    };
+
+    const maxColaboradores = Math.max(...data.qtdData);
+
+    // Função para atualizar o card ao clicar na legenda
+    const updateCardTotal = (chart) => {
+        let newTotal = 0;
+        chart.data.datasets.forEach((dataset, index) => {
+            if (chart.isDatasetVisible(index) && dataset.type === 'bar') {
+                newTotal += dataset.data.reduce((a, b) => a + b, 0);
+            }
+        });
+        const el = document.getElementById('bn-folha-vs-colab-total');
+        if(el) el.textContent = window.formatCurrency(newTotal);
+    };
+
+    window.activeCharts[chartId] = new Chart(ctx, {
         data: {
             labels: data.labels,
-            datasets: [
-                {
-                    type: 'bar',
-                    label: `Valor da Folha (${valueType})`,
-                    data: data.valorData,
-                    backgroundColor: '#3b82f6',
-                    yAxisID: 'y', 
-                },
-                {
-                    type: 'line',
-                    label: 'Qtd. Colaboradores',
-                    data: data.qtdData,
-                    borderColor: '#ef4444',
-                    backgroundColor: '#ef4444',
-                    yAxisID: 'y1', 
-                    tension: 0.1
-                }
-            ]
+            datasets: [lineDataset, ...barDatasets]
         },
         options: { 
             responsive: true, 
             maintainAspectRatio: false,
-            layout: { padding: { top: 30 } },
+            layout: { padding: { top: 20, right: 20 } },
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
             plugins: { 
-                legend: { position: 'top' },
+                legend: { 
+                    position: 'right', 
+                    align: 'start',    
+                    labels: {
+                        boxWidth: 12,
+                        padding: 15,
+                        usePointStyle: true 
+                    },
+                    onClick: function(e, legendItem, legend) {
+                        const index = legendItem.datasetIndex;
+                        const ci = legend.chart;
+                        if (ci.isDatasetVisible(index)) {
+                            ci.hide(index);
+                            legendItem.hidden = true;
+                        } else {
+                            ci.show(index);
+                            legendItem.hidden = false;
+                        }
+                        updateCardTotal(ci);
+                    }
+                },
                 tooltip: {
                     callbacks: {
                         label: function(context) {
                             let label = context.dataset.label || '';
                             if (label) label += ': ';
-                            if (context.dataset.yAxisID === 'y1') label += context.parsed.y;
-                            else label += window.formatCurrency(context.parsed.y);
-                            return label;
+                            if (context.dataset.yAxisID === 'y1') {
+                                return label + context.parsed.y;
+                            } else {
+                                return label + window.formatCurrency(context.parsed.y);
+                            }
+                        },
+                        footer: function(tooltipItems) {
+                            let totalFolha = 0;
+                            tooltipItems.forEach(item => {
+                                if (item.dataset.type === 'bar') {
+                                    totalFolha += item.parsed.y;
+                                }
+                            });
+                            if (totalFolha > 0) {
+                                return 'Total Visível Mês: ' + window.formatCurrency(totalFolha);
+                            }
+                            return '';
                         }
                     }
                 },
-                datalabels: {
-                    align: function(context) {
-                        return context.dataset.yAxisID === 'y1' ? 'bottom' : 'top';
-                    },
-                    offset: 6, 
-                    font: { weight: 'bold' },
-                    formatter: function(value, context) {
-                        if (context.dataset.yAxisID === 'y') { 
-                            return window.formatAbbreviated(value);
-                        }
-                        return value; 
-                    }
-                }
+                datalabels: { display: true }
             },
             scales: {
+                x: { stacked: true },
                 y: { 
                     type: 'linear',
                     display: true,
                     position: 'left',
-                    title: { display: true, text: `Valor da Folha (${valueType})` },
+                    stacked: true,
+                    title: { display: true, text: `Valor (${valueType})` },
                     ticks: { callback: window.formatAbbreviated }
                 },
                 y1: { 
@@ -708,10 +827,12 @@ function renderFolhaVsColaboradoresReport(data, valueType) {
                     position: 'right',
                     title: { display: true, text: 'Qtd. Colaboradores' },
                     grid: { drawOnChartArea: false },
-                    ticks: { beginAtZero: true }
+                    ticks: { beginAtZero: true },
+                    suggestedMax: maxColaboradores * 1.5 
                 }
             }
-        }
+        },
+        plugins: [ChartDataLabels] 
     });
 }
 

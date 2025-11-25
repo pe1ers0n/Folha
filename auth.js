@@ -56,12 +56,7 @@ router.post('/auth/login', async (req, res) => {
 
         res.json({ 
             token, 
-            user: { 
-                id: user.id, 
-                nome: user.nome, 
-                email: user.email,
-                is_admin: user.is_admin // <--- Agora enviamos o nível de acesso
-            } 
+            user: { id: user.id, nome: user.nome, email: user.email, is_admin: user.is_admin } 
         });
 
     } catch (error) {

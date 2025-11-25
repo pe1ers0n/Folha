@@ -360,13 +360,29 @@ window.loadCCData = async function() {
     try {
         const ccList = await window.callApi('/cc');
         let ccHTML = '<div class="space-y-4">';
+        
         ccList.sort((a,b) => a.nome.localeCompare(b.nome)).forEach((cc) => {
-             const lotacoesBadges = (cc.lotacoes && cc.lotacoes.length > 0) ? cc.lotacoes.map(l => `<span class="bg-blue-100 text-blue-800 text-xs font-semibold mr-2 px-2.5 py-0.5 rounded">${l}</span>`).join('') : '<span class="text-gray-400 text-xs italic">Nenhuma lotação associada</span>';
-             ccHTML += `<div class="bg-white rounded-xl shadow p-4 border border-gray-200"><h3 class="text-lg font-bold text-gray-800 mb-2">${cc.nome}</h3><div class="flex flex-wrap gap-2 mt-1">${lotacoesBadges}</div></div>`;
+             const lotacoesBadges = (cc.lotacoes && cc.lotacoes.length > 0) 
+                ? cc.lotacoes.map(l => `<span class="bg-blue-100 text-blue-800 text-xs font-semibold mr-2 px-2.5 py-0.5 rounded">${l}</span>`).join('') 
+                : '<span class="text-gray-400 text-xs italic">Nenhuma lotação associada</span>';
+             
+             // --- ALTERAÇÃO AQUI: Formata "ID - NOME" ---
+             const tituloCard = cc.id ? `${cc.id} - ${cc.nome}` : cc.nome;
+
+             ccHTML += `
+                <div class="bg-white rounded-xl shadow p-4 border border-gray-200">
+                    <h3 class="text-lg font-bold text-gray-800 mb-2">${tituloCard}</h3>
+                    <div class="flex flex-wrap gap-2 mt-1">${lotacoesBadges}</div>
+                </div>`;
         });
+        
         ccHTML += '</div>';
         container.innerHTML = ccHTML;
-    } catch (err) { window.showToast(err.message, 'error'); } finally { window.hideLoader(container); }
+    } catch (err) { 
+        window.showToast(err.message, 'error'); 
+    } finally { 
+        window.hideLoader(container); 
+    }
 };
 
 // --- LÓGICA DE LANÇAMENTOS ---
@@ -608,66 +624,94 @@ window.loadUsers = async function() {
     }
 };
 
-// Preenche o formulário para edição
+// --- FUNÇÕES DE USUÁRIO ATUALIZADAS ---
+
+// 1. Preencher formulário para edição
 window.editUser = function(user) {
-    // ATUALIZADO: Usando os novos IDs com prefixo 'gestao-'
+    // Campos básicos
     document.getElementById('gestao-user-id').value = user.id;
     document.getElementById('gestao-user-nome').value = user.nome;
     document.getElementById('gestao-user-email').value = user.email;
-    document.getElementById('gestao-user-senha').value = ''; 
-    document.getElementById('gestao-user-is-admin').checked = (user.is_admin === 1);
+    document.getElementById('gestao-user-senha').value = '';
     
+    // NOVO: Define o perfil no Select
+    document.getElementById('gestao-user-perfil').value = user.perfil || 'visualizador';
+
+    // NOVO: Marca os Menus Permitidos
+    const menusPermitidos = (user.menus_permitidos || '').split(',');
+    document.querySelectorAll('.menu-check').forEach(chk => {
+        chk.checked = menusPermitidos.includes(chk.value);
+    });
+
+    // NOVO: Marca os Relatórios Permitidos
+    const relsPermitidos = (user.relatorios_permitidos || '').split(',');
+    document.querySelectorAll('.perm-check').forEach(chk => {
+        chk.checked = relsPermitidos.includes(chk.value);
+    });
+
+    // Ajustes visuais
     document.getElementById('user-form-title').textContent = 'Editar Usuário #' + user.id;
     document.getElementById('btn-save-user').innerHTML = '<i class="fas fa-save mr-2"></i> Atualizar';
     document.getElementById('btn-cancel-edit').classList.remove('hidden');
-    document.getElementById('gestao-user-email').focus();
 };
 
-// Reseta o formulário
+// 2. Limpar formulário
 window.resetUserForm = function() {
     document.getElementById('form-usuario').reset();
-    // ATUALIZADO: Usando o novo ID
     document.getElementById('gestao-user-id').value = '';
     
+    // Reseta para visualizador
+    document.getElementById('gestao-user-perfil').value = 'visualizador';
+    
+    // Desmarca tudo
+    document.querySelectorAll('.menu-check, .perm-check').forEach(c => c.checked = false);
+
     document.getElementById('user-form-title').textContent = 'Cadastrar Novo Usuário';
     document.getElementById('btn-save-user').innerHTML = '<i class="fas fa-plus mr-2"></i> Adicionar';
     document.getElementById('btn-cancel-edit').classList.add('hidden');
 };
 
-// Salva (Cria ou Edita)
+// 3. Salvar (Envia tudo para o backend)
 window.saveUser = async function(e) {
-    e.preventDefault(); // Isso aqui impede a página de recarregar!
+    e.preventDefault();
     
-    // ATENÇÃO: Tem que usar os IDs novos 'gestao-...'
     const id = document.getElementById('gestao-user-id').value;
     const nome = document.getElementById('gestao-user-nome').value;
     const email = document.getElementById('gestao-user-email').value;
     const senha = document.getElementById('gestao-user-senha').value;
-    const isAdmin = document.getElementById('gestao-user-is-admin').checked ? 1 : 0;
     
+    // Pega o valor do Select de Perfil
+    const perfil = document.getElementById('gestao-user-perfil').value;
+
+    // Coleta Menus marcados
+    const menus = Array.from(document.querySelectorAll('.menu-check:checked')).map(c => c.value);
+    
+    // Coleta Relatórios marcados
+    const relatorios = Array.from(document.querySelectorAll('.perm-check:checked')).map(c => c.value);
+
     try {
         if (id) {
             // EDIÇÃO (PUT)
-            await window.callApi(`/usuarios/${id}`, 'PUT', { nome, email, senha, is_admin: isAdmin });
+            await window.callApi(`/usuarios/${id}`, 'PUT', { nome, email, senha, perfil, menus, relatorios });
             window.showToast('Usuário atualizado!', 'success');
             window.resetUserForm();
         } else {
             // CRIAÇÃO (POST)
+            // 1. Cria o usuário
             await window.callApi('/auth/register', 'POST', { nome, email, password: senha });
             
-            if (isAdmin) {
-                // Se for admin, faz o update logo em seguida (solução rápida para garantir permissão)
-                const users = await window.callApi('/usuarios');
-                const newUser = users.find(u => u.email === email);
-                if(newUser) {
-                    await window.callApi(`/usuarios/${newUser.id}`, 'PUT', { nome, email, is_admin: 1 });
-                }
+            // 2. Busca para pegar o ID e atualizar as permissões
+            const users = await window.callApi('/usuarios');
+            const newUser = users.find(u => u.email === email);
+            
+            if(newUser) {
+                await window.callApi(`/usuarios/${newUser.id}`, 'PUT', { nome, email, perfil, menus, relatorios });
             }
-            window.showToast('Usuário criado!', 'success');
+            window.showToast('Usuário criado com permissões!', 'success');
             document.getElementById('form-usuario').reset();
         }
         
-        window.loadUsers();
+        window.loadUsers(); // Recarrega a tabela
     } catch (err) {
         window.showToast(err.message, 'error');
     }

@@ -205,16 +205,19 @@ router.get('/cc', async (req, res) => {
     try {
         const { rows } = await dbDW.query(
             `SELECT 
-                centro_custo_protheus AS nome_cc,
-                json_agg(DISTINCT nome_lotacao) AS lotacoes
-             FROM gold.d_fortes_lotacao
-             WHERE centro_custo_protheus IS NOT NULL
-             GROUP BY centro_custo_protheus
+                l.centro_custo_protheus AS nome_cc,
+                MAX(cc.id_centro_custo) AS id_cc, -- Busca o ID
+                json_agg(DISTINCT l.nome_lotacao) AS lotacoes
+             FROM gold.d_fortes_lotacao l
+             LEFT JOIN gold.d_protheus_centro_custo cc 
+                ON l.centro_custo_protheus = cc.descricao -- Liga pelo nome para achar o ID
+             WHERE l.centro_custo_protheus IS NOT NULL
+             GROUP BY l.centro_custo_protheus
              ORDER BY nome_cc`
         );
         
-        // O driver 'pg' já retorna 'lotacoes' como um array JS.
         const result = rows.map(row => ({
+            id: row.id_cc || '', // Envia o ID para o front
             nome: row.nome_cc,
             lotacoes: row.lotacoes || [] 
         }));
@@ -294,6 +297,7 @@ router.get('/lotacoes/status', async (req, res) => {
 // --- FUNÇÃO AUXILIAR PARA CONSTRUIR WHERE CLAUSE (Totalmente reescrita para POSTGRES) ---
 // ATUALIZADO: Esta função (para Dashboard/Relatórios) usa a lógica NOVA (Pai).
 // CORREÇÃO: Usa um LEFT JOIN em uma subconsulta (cc_map) com DISTINCT ON para prevenir duplicação de linhas.
+// --- FUNÇÃO AUXILIAR PARA CONSTRUIR WHERE CLAUSE ---
 const buildWhereClause = (filters, startIndex = 1) => {
     let joinClauses = [
         'LEFT JOIN gold.d_fortes_empresa d_emp ON f.id_empresa = d_emp.id_empresa',
@@ -301,16 +305,22 @@ const buildWhereClause = (filters, startIndex = 1) => {
         'LEFT JOIN gold.d_fortes_estabelecimento d_est ON f.id_estabelecimento = d_est.id_estabelecimento',
         'LEFT JOIN gold.d_fortes_evento d_evt ON f.id_evento = d_evt.id_evento',
         'LEFT JOIN gold.d_fortes_tipo_folha d_tf ON f.id_folha = d_tf.id_folha',
+        
+        // ALTERAÇÃO NA SUBQUERY: Agora busca também o pai.id_centro_custo
         `LEFT JOIN (
             SELECT DISTINCT ON (dcc.descricao)
                 dcc.descricao AS cc_filho_nome,
-                pai.descricao AS cc_pai_nome
+                dcc.id_centro_custo AS cc_filho_id, -- NOVO: ID DO FILHO
+                pai.descricao AS cc_pai_nome,
+                pai.id_centro_custo AS cc_pai_id
             FROM gold.d_protheus_centro_custo dcc
             LEFT JOIN gold.d_protheus_centro_custo pai
                 ON LEFT(dcc.id_centro_custo::text, 3) = pai.id_centro_custo::text
                AND CHAR_LENGTH(pai.id_centro_custo::text) = 3
         ) AS cc_map ON d_lot.centro_custo_protheus = cc_map.cc_filho_nome`
     ];
+    // ... (resto da função continua igual, sem alterações na lógica de filtros)
+    
     let whereClauses = [];
     let params = [];
     let paramIndex = startIndex; 
@@ -320,8 +330,6 @@ const buildWhereClause = (filters, startIndex = 1) => {
         params.push(filters.year); 
     }
     
-    // --- INÍCIO DA CORREÇÃO (MÊS) ---
-    // Verifica se o filtro de mês existe e se NÃO é "Todos" ou "Todos os Meses"
     if (filters.month && filters.month !== 'Todos' && filters.month !== 'Todos os Meses') {
         const monthNumber = MONTH_MAP[filters.month];
         if(monthNumber) {
@@ -329,16 +337,13 @@ const buildWhereClause = (filters, startIndex = 1) => {
             params.push(monthNumber); 
         }
     } 
-    // --- FIM DA CORREÇÃO ---
 
-    // Aceita array para Empresa
     if (filters.company && filters.company.length > 0) { 
         const placeholders = filters.company.map(() => `$${paramIndex++}`);
         whereClauses.push(`d_emp.empresa IN (${placeholders.join(',')})`); 
         params.push(...filters.company); 
     }
     
-    // Aceita array para Centro de Custo
     if (filters.costCenter && filters.costCenter.length > 0) {
         const placeholders = filters.costCenter.map(() => `$${paramIndex++}`);
         whereClauses.push(`cc_map.cc_pai_nome IN (${placeholders.join(',')})`);
@@ -364,9 +369,12 @@ const buildWhereClause = (filters, startIndex = 1) => {
         params.push(...filters.events);
     }
 
-    if (filters.valueType === 'Proventos') {
-        whereClauses.push(`d_tf.descricao NOT ILIKE '%ADIANTAMENTO%'`);
-    }
+    // Se o usuário pedir 'Proventos', remove o filtro do Adiantamento do buildWhereClause
+    // (já estamos aplicando manualmente na rota de análise de encargos, mas aqui no dashboard pode manter se quiser ver tudo)
+    // Para manter coerência com a última alteração:
+    // if (filters.valueType === 'Proventos') {
+    //    whereClauses.push(`d_tf.descricao NOT ILIKE '%ADIANTAMENTO%'`);
+    // }
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
     const joinSql = joinClauses.join(' ');
@@ -376,47 +384,32 @@ const buildWhereClause = (filters, startIndex = 1) => {
 
 // --- ROTA DO DASHBOARD (Otimizada) ---
 // ATUALIZADO: Esta rota (para Início) usa a lógica NOVA (Pai).
+// --- ROTA DO DASHBOARD (Otimizada e com ID do Pai) ---
+// --- ROTA DO DASHBOARD (COM HIERARQUIA PAI > FILHO) ---
+// --- ROTA DO DASHBOARD (COM IDs PAI E FILHO) ---
 router.post('/dashboard', async (req, res) => {
     const filters = req.body;
     try {
-        const [
-            tiposFolhaDb, 
-            datasDb,
-            ccsDb
-        ] = await Promise.all([
+        const [tiposFolhaDb, datasDb, ccsDb] = await Promise.all([
             dbDW.query('SELECT DISTINCT descricao AS descricao_tipo_folha FROM gold.d_fortes_tipo_folha ORDER BY descricao_tipo_folha'),
             dbDW.query('SELECT DISTINCT EXTRACT(YEAR FROM data) AS ano, EXTRACT(MONTH FROM data) AS mes_num FROM gold.f_fortes_pagamento'), 
-            // ATUALIZADO: Popula o filtro com os CCs Pai
-            dbDW.query(`
-                SELECT DISTINCT pai.descricao AS nome_cc
-                FROM gold.d_protheus_centro_custo dcc
-                LEFT JOIN gold.d_protheus_centro_custo pai
-                    ON LEFT(dcc.id_centro_custo::text, 3) = pai.id_centro_custo::text
-                   AND CHAR_LENGTH(pai.id_centro_custo::text) = 3
-                WHERE pai.descricao IS NOT NULL
-                ORDER BY nome_cc
-            `)
+            dbDW.query(`SELECT DISTINCT pai.descricao AS nome_cc FROM gold.d_protheus_centro_custo dcc LEFT JOIN gold.d_protheus_centro_custo pai ON LEFT(dcc.id_centro_custo::text, 3) = pai.id_centro_custo::text AND CHAR_LENGTH(pai.id_centro_custo::text) = 3 WHERE pai.descricao IS NOT NULL ORDER BY nome_cc`)
         ]);
         
-        const anosSet = new Set();
-        const mesesSet = new Set();
-        datasDb.rows.forEach(r => {
-            anosSet.add(r.ano);
-            mesesSet.add(r.mes_num);
-        });
-        const anos = [...anosSet].sort((a, b) => b - a);
-        const meses = [...mesesSet].map(num => MONTH_NAME_MAP[num]).filter(Boolean);
+        const anos = [...new Set(datasDb.rows.map(r => r.ano))].sort((a, b) => b - a);
+        const meses = [...new Set(datasDb.rows.map(r => r.mes_num))].map(num => MONTH_NAME_MAP[num]).filter(Boolean);
 
-        // Constrói a consulta principal
         const { whereSql, joinSql, params } = buildWhereClause(filters); 
         const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento', 'Informação': 'informacao' };
         const valueField = valueTypeMap[filters.valueType] || 'provento';
 
-        // ATUALIZADO: Seleciona e agrupa por cc_map.cc_pai_nome
         const sql = `
             SELECT 
                 d_emp.empresa,
                 cc_map.cc_pai_nome AS centro_custo_pai,
+                cc_map.cc_pai_id AS centro_custo_pai_id,
+                cc_map.cc_filho_nome AS centro_custo_filho,
+                cc_map.cc_filho_id AS centro_custo_filho_id, -- NOVO
                 d_tf.descricao AS tipo_folha,
                 SUM(f.${valueField}) as total_valor
             FROM gold.f_fortes_pagamento f
@@ -425,12 +418,14 @@ router.post('/dashboard', async (req, res) => {
             GROUP BY 
                 d_emp.empresa,
                 cc_map.cc_pai_nome,
+                cc_map.cc_pai_id,
+                cc_map.cc_filho_nome,
+                cc_map.cc_filho_id, -- NOVO
                 d_tf.descricao
         `;
 
         const { rows: filteredData } = await dbDW.query(sql, params); 
 
-        // Processa os dados
         const byEmpresa = {};
         const byCentroCusto = {};
         const payrollHeaders = new Set(); 
@@ -439,19 +434,35 @@ router.post('/dashboard', async (req, res) => {
             const empresa = row.empresa || 'Não especificada';
             const tipo_folha = row.tipo_folha ? row.tipo_folha.trim() : 'Não especificado';
             const valueToSum = parseFloat(row.total_valor) || 0;
-            
             payrollHeaders.add(tipo_folha);
             
-            // ATUALIZADO: Usa o centro_custo_pai
-            const cc = row.centro_custo_pai || 'Sem Centro de Custo';
+            // Pai (Chave Composta)
+            const ccPaiName = row.centro_custo_pai || 'Sem Centro de Custo';
+            const ccPaiId = row.centro_custo_pai_id || '';
+            const ccPaiKey = ccPaiId ? `${ccPaiName}|||${ccPaiId}` : ccPaiName;
 
+            // Filho (Chave Composta - NOVO)
+            const ccFilhoName = row.centro_custo_filho || 'Indefinido';
+            const ccFilhoId = row.centro_custo_filho_id || '';
+            const ccFilhoKey = ccFilhoId ? `${ccFilhoName}|||${ccFilhoId}` : ccFilhoName;
+
+            // Agrupamento Empresa
             if (!byEmpresa[empresa]) byEmpresa[empresa] = {};
             if (!byEmpresa[empresa][tipo_folha]) byEmpresa[empresa][tipo_folha] = 0;
             byEmpresa[empresa][tipo_folha] += valueToSum;
 
-            if (!byCentroCusto[cc]) byCentroCusto[cc] = {};
-            if (!byCentroCusto[cc][tipo_folha]) byCentroCusto[cc][tipo_folha] = 0;
-            byCentroCusto[cc][tipo_folha] += valueToSum;
+            // Agrupamento CC
+            if (!byCentroCusto[ccPaiKey]) {
+                byCentroCusto[ccPaiKey] = { isHierarchy: true, totals: {}, children: {} };
+            }
+            // Soma Pai
+            if (!byCentroCusto[ccPaiKey].totals[tipo_folha]) byCentroCusto[ccPaiKey].totals[tipo_folha] = 0;
+            byCentroCusto[ccPaiKey].totals[tipo_folha] += valueToSum;
+
+            // Soma Filho (Usando a chave composta)
+            if (!byCentroCusto[ccPaiKey].children[ccFilhoKey]) byCentroCusto[ccPaiKey].children[ccFilhoKey] = {};
+            if (!byCentroCusto[ccPaiKey].children[ccFilhoKey][tipo_folha]) byCentroCusto[ccPaiKey].children[ccFilhoKey][tipo_folha] = 0;
+            byCentroCusto[ccPaiKey].children[ccFilhoKey][tipo_folha] += valueToSum;
         });
 
         const standardMonths = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
@@ -465,7 +476,6 @@ router.post('/dashboard', async (req, res) => {
             payrollHeaders: Array.from(payrollHeaders).sort(),
             empresaData: byEmpresa,
             ccData: byCentroCusto,
-            // ATUALIZADO: Envia a lista de CCs Pai para o filtro do dashboard
             availableCostCenters: ['Todos', ...ccsDb.rows.map(r => r.nome_cc)]
         });
 
@@ -1137,58 +1147,95 @@ router.post('/reports/cc-lotacao-colaborador', async (req, res) => {
     }
 });
 
-// --- ROTA: RELATÓRIO VALORES FOLHA VS COLABORADORES (NOVO) ---
+// --- ROTA: RELATÓRIO VALORES FOLHA VS COLABORADORES (EMPILHADO) ---
 router.post('/reports/folha-vs-colaboradores', async (req, res) => {
     const filters = req.body;
     try {
-        // Usa a mesma função de filtros dos outros relatórios (já com a lógica de CC Pai)
         const { whereSql, joinSql, params } = buildWhereClause(filters);
         const valueTypeMap = { 'Líquido': 'liquido', 'Descontos': 'desconto', 'Proventos': 'provento', 'Informação': 'informacao' };
         const valueField = valueTypeMap[filters.valueType] || 'provento';
 
-        // 1. Consulta SQL para buscar os dois indicadores por mês
-        const sql = `
+        // 1. Consulta Principal: Valores quebrados por Tipo de Folha e Mês
+        // ATENÇÃO: Removi "AND EXTRACT(MONTH FROM f.data) IS NOT NULL" pois já está implícito
+        const sqlValues = `
             SELECT 
                 EXTRACT(MONTH FROM f.data) AS mes_num,
-                SUM(f.${valueField}) as total_valor,
+                d_tf.descricao AS tipo_folha,
+                SUM(f.${valueField}) as total_valor
+            FROM gold.f_fortes_pagamento f
+            ${joinSql}
+            ${whereSql}
+            GROUP BY mes_num, d_tf.descricao
+            ORDER BY mes_num, d_tf.descricao;
+        `;
+
+        // 2. Consulta Secundária: Qtd de Colaboradores
+        const sqlCount = `
+            SELECT 
+                EXTRACT(MONTH FROM f.data) AS mes_num,
                 COUNT(DISTINCT f.id_funcionario) as total_colaboradores
             FROM gold.f_fortes_pagamento f
             ${joinSql}
             ${whereSql}
-            AND EXTRACT(MONTH FROM f.data) IS NOT NULL
-            GROUP BY mes_num
-            ORDER BY mes_num;
+            GROUP BY mes_num;
         `;
 
-        const { rows } = await dbDW.query(sql, params);
+        // Executa em paralelo
+        const [resValues, resCount] = await Promise.all([
+            dbDW.query(sqlValues, params),
+            dbDW.query(sqlCount, params)
+        ]);
 
-        // 2. Processar os dados para o gráfico
-        const processed = {
-            labels: [],
-            valorData: [],
-            qtdData: []
-        };
-        const monthData = {};
-        rows.forEach(r => {
-            monthData[r.mes_num] = {
-                valor: parseFloat(r.total_valor),
-                qtd: parseInt(r.total_colaboradores, 10)
-            };
+        // --- Processamento dos Dados ---
+        
+        const countMap = {};
+        resCount.rows.forEach(r => countMap[r.mes_num] = parseInt(r.total_colaboradores));
+
+        const valuesMap = {}; 
+        const allTypes = new Set();
+
+        resValues.rows.forEach(r => {
+            const m = r.mes_num;
+            const t = r.tipo_folha;
+            const v = parseFloat(r.total_valor);
+            
+            if (!valuesMap[m]) valuesMap[m] = {};
+            valuesMap[m][t] = v;
+            allTypes.add(t); // Guarda todos os tipos encontrados
         });
 
-        // Garante que todos os 12 meses apareçam no gráfico
+        const uniqueTypes = Array.from(allTypes).sort(); // Ordena alfabeticamente
+        const labels = [];
+        const qtdData = [];
+        
+        // Cria a estrutura de datasets vazia para cada tipo encontrado
+        const datasets = uniqueTypes.map(type => ({
+            label: type,
+            data: []
+        }));
+
+        // Preenche os 12 meses
         for (let i = 1; i <= 12; i++) {
-            processed.labels.push(MONTH_NAME_MAP[i]); // MONTH_NAME_MAP já existe no seu routes.js
-            if (monthData[i]) {
-                processed.valorData.push(monthData[i].valor);
-                processed.qtdData.push(monthData[i].qtd);
-            } else {
-                processed.valorData.push(0);
-                processed.qtdData.push(0);
-            }
+            labels.push(MONTH_NAME_MAP[i]);
+            qtdData.push(countMap[i] || 0);
+            
+            datasets.forEach(ds => {
+                // Se existir valor para este mês e este tipo, usa. Senão, zero.
+                const val = valuesMap[i] ? (valuesMap[i][ds.label] || 0) : 0;
+                ds.data.push(val);
+            });
         }
         
-        res.json(processed);
+        res.json({
+            labels,
+            qtdData,
+            datasets,
+            // Envia totais para o card de resumo
+            valorData: datasets.reduce((acc, ds) => { // Recria o vetor de soma total para o card
+                ds.data.forEach((v, i) => acc[i] = (acc[i] || 0) + v);
+                return acc;
+            }, [])
+        });
 
     } catch (error) {
         handleError(res, error, 'Erro ao gerar o relatório Valores Folha x Colaboradores.');
@@ -1399,10 +1446,12 @@ router.post('/reports/analise-encargos', async (req, res) => {
 // Listar usuários (Trazendo is_admin)
 router.get('/usuarios', async (req, res) => {
     try {
-        // Apenas Admins podem listar (opcional, mas recomendado)
-        // if (!req.user.is_admin) return res.status(403).json({ message: 'Acesso negado.' });
-
-        const [rows] = await dbApp.query('SELECT id, nome, email, is_admin, data_cadastro FROM usuarios ORDER BY nome');
+        // Busca todas as colunas novas
+        const [rows] = await dbApp.query(`
+            SELECT id, nome, email, perfil, relatorios_permitidos, menus_permitidos, data_cadastro 
+            FROM usuarios 
+            ORDER BY nome
+        `);
         res.json(rows);
     } catch (error) {
         handleError(res, error, 'Erro ao buscar usuários.');
@@ -1412,13 +1461,19 @@ router.get('/usuarios', async (req, res) => {
 // Editar Usuário (NOVO)
 router.put('/usuarios/:id', async (req, res) => {
     const { id } = req.params;
-    const { nome, email, senha, is_admin } = req.body;
+    // Recebe os novos campos do Frontend
+    const { nome, email, senha, perfil, relatorios, menus } = req.body;
     
     try {
-        // 1. Se enviou senha, criptografa. Se não, mantém a atual.
-        let query = 'UPDATE usuarios SET nome = ?, email = ?, is_admin = ?';
-        let params = [nome, email, is_admin];
+        // Converte os arrays (['a','b']) em strings ("a,b") para salvar no banco
+        const relatoriosString = Array.isArray(relatorios) ? relatorios.join(',') : relatorios;
+        const menusString = Array.isArray(menus) ? menus.join(',') : menus;
 
+        // Query base
+        let query = 'UPDATE usuarios SET nome = ?, email = ?, perfil = ?, relatorios_permitidos = ?, menus_permitidos = ?';
+        let params = [nome, email, perfil, relatoriosString, menusString];
+
+        // Se a senha foi preenchida, atualiza ela também
         if (senha && senha.trim() !== '') {
             const bcrypt = require('bcryptjs');
             const hashedPassword = await bcrypt.hash(senha, 10);

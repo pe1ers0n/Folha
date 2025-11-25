@@ -3,194 +3,192 @@
 // Estado local de controle para não recarregar filtros repetidamente sem necessidade
 let reportsFiltersPopulated = false;
 
-// ATUALIZADO: Adicionado 'window.'
+// --- FUNÇÕES UTILITÁRIAS GLOBAIS ---
+
 window.getSelectedItems = function(panel) {
     if (!panel) return [];
     return Array.from(panel.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
 }
 
-// ATUALIZADO: Adicionado 'window.'
-window.updateMultiSelectFilterText = function(selected, textElement, defaultText) {
+window.updateMultiSelectFilterText = function(panelElement) {
+    // Encontra o botão de texto associado a este painel
+    // A estrutura é: button > span(text) + panel
+    // Ou: div.multi-select-dropdown > button + panel
+    const dropdown = panelElement.closest('.multi-select-dropdown');
+    if (!dropdown) return;
+    
+    const buttonText = dropdown.querySelector('button span');
+    if (!buttonText) return;
+
+    // Define o texto padrão baseado no ID do painel para saber o contexto
+    let defaultText = "Selecionar";
+    if (panelElement.id.includes('company')) defaultText = "Todas as Empresas";
+    else if (panelElement.id.includes('cc')) defaultText = "Todos os Centros";
+    else if (panelElement.id.includes('payroll')) defaultText = "Todos os Tipos";
+    else if (panelElement.id.includes('lotation')) defaultText = "Todas as Lotações";
+    else if (panelElement.id.includes('event')) defaultText = "Todos os Eventos";
+
+    const selected = window.getSelectedItems(panelElement);
     const selectedCount = selected.length;
-    textElement.textContent = selectedCount === 0 ? defaultText : 
-                             (selectedCount === 1 ? selected[0] : `${selectedCount} selecionados`);
-}
-
-// ATUALIZADO: Adicionado 'window.'
-window.setupMultiSelectFilter = function(panelElement, textElement, defaultText, searchSelector, selectAllSelector, deselectAllSelector, itemLabelSelector) {
-    const searchInput = panelElement.querySelector(searchSelector);
-    const selectAllLink = panelElement.querySelector(selectAllSelector);
-    const deselectAllLink = panelElement.querySelector(deselectAllSelector);
-    const itemListContainer = panelElement.querySelector('.max-h-40.overflow-y-auto'); // Garante que pega o container da lista
-
-    updateMultiSelectFilterText(getSelectedItems(panelElement), textElement, defaultText);
-
-    if (searchInput) {
-        searchInput.addEventListener('input', (e) => {
-            const searchTerm = e.target.value.toLowerCase();
-            panelElement.querySelectorAll(itemLabelSelector).forEach(label => {
-                const itemName = label.textContent.toLowerCase();
-                label.style.display = itemName.includes(searchTerm) ? 'flex' : 'none';
-            });
-        });
-    }
-
-    if (selectAllLink) {
-        selectAllLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            panelElement.querySelectorAll(`${itemLabelSelector} input[type="checkbox"]`).forEach(cb => {
-                if (cb.closest(itemLabelSelector).style.display !== 'none') cb.checked = true;
-            });
-            updateMultiSelectFilterText(getSelectedItems(panelElement), textElement, defaultText);
-        });
-    }
-
-    if (deselectAllLink) {
-        deselectAllLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            panelElement.querySelectorAll(`${itemLabelSelector} input[type="checkbox"]`).forEach(cb => {
-                if (cb.closest(itemLabelSelector).style.display !== 'none') cb.checked = false;
-            });
-            updateMultiSelectFilterText(getSelectedItems(panelElement), textElement, defaultText);
-        });
-    }
-
-    if (itemListContainer) {
-        itemListContainer.addEventListener('change', (e) => {
-            if (e.target.type === 'checkbox') {
-                updateMultiSelectFilterText(getSelectedItems(panelElement), textElement, defaultText);
-            }
-        });
+    
+    // Lógica inteligente de texto
+    const totalCheckboxes = panelElement.querySelectorAll('input[type="checkbox"]').length;
+    
+    if (selectedCount === 0) {
+        buttonText.textContent = "Nenhum selecionado";
+    } else if (selectedCount === totalCheckboxes) {
+        buttonText.textContent = defaultText; // Se todos marcados, volta ao padrão (ex: Todas as Empresas)
+    } else if (selectedCount === 1) {
+        buttonText.textContent = selected[0];
+    } else {
+        buttonText.textContent = `${selectedCount} selecionados`;
     }
 }
 
-// ATUALIZADO: Adicionado 'window.'
+// --- LÓGICA DE EVENTOS (DELEGAÇÃO) ---
+// Esta é a correção principal: Um único listener no corpo da página
+document.addEventListener('click', function(e) {
+    
+    // 1. Clique em "Marcar Todos"
+    if (e.target.classList.contains('select-all')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const panel = e.target.closest('.multi-select-dropdown-panel');
+        if (panel) {
+            const checkboxes = panel.querySelectorAll('input[type="checkbox"]');
+            checkboxes.forEach(cb => {
+                // Marca apenas se estiver visível (respeita busca)
+                if (cb.parentElement.style.display !== 'none') {
+                    cb.checked = true;
+                }
+            });
+            window.updateMultiSelectFilterText(panel);
+        }
+    }
+
+    // 2. Clique em "Desmarcar Todos"
+    if (e.target.classList.contains('deselect-all')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const panel = e.target.closest('.multi-select-dropdown-panel');
+        if (panel) {
+            const checkboxes = panel.querySelectorAll('input[type="checkbox"]');
+            checkboxes.forEach(cb => {
+                // Desmarca apenas se estiver visível
+                if (cb.parentElement.style.display !== 'none') {
+                    cb.checked = false;
+                }
+            });
+            window.updateMultiSelectFilterText(panel);
+        }
+    }
+
+    // 3. Clique dentro do painel (impede fechar ao clicar)
+    if (e.target.closest('.multi-select-dropdown-panel')) {
+        // Se não for um link (a), para a propagação
+        if (e.target.tagName !== 'A') {
+            e.stopPropagation(); 
+        }
+    }
+});
+
+// Listener para mudança nos checkboxes (atualiza texto)
+document.addEventListener('change', function(e) {
+    if (e.target.type === 'checkbox' && e.target.closest('.multi-select-dropdown-panel')) {
+        const panel = e.target.closest('.multi-select-dropdown-panel');
+        window.updateMultiSelectFilterText(panel);
+    }
+});
+
+// Listener para busca (input)
+document.addEventListener('input', function(e) {
+    if (e.target.classList.contains('filter-search')) {
+        const searchTerm = e.target.value.toLowerCase();
+        const panel = e.target.closest('.multi-select-dropdown-panel');
+        const labels = panel.querySelectorAll('label');
+        
+        labels.forEach(label => {
+            const text = label.textContent.toLowerCase();
+            label.style.display = text.includes(searchTerm) ? 'flex' : 'none';
+        });
+    }
+});
+
+
+// --- FUNÇÃO DE CARREGAMENTO ---
+
 window.loadReportFilters = async function() {
     if (reportsFiltersPopulated) return;
-    const reportsContainer = document.getElementById('reports-container');
-    
-    // Não mostre o loader principal se for apenas carregar filtros, 
-    // senão pode piscar a tela. Use um indicador sutil se preferir.
     
     try {
-        const data = await callApi('/reports/filters', 'GET');
+        const data = await window.callApi('/reports/filters', 'GET');
         if (data.filterOptions) {
-            populateReportFilters(data.filterOptions);
+            window.populateReportFilters(data.filterOptions);
             reportsFiltersPopulated = true;
         }
     } catch (err) {
-        showToast("Erro ao carregar filtros: " + err.message, 'error');
+        window.showToast("Erro ao carregar filtros: " + err.message, 'error');
     }
 }
 
-// --- FUNÇÃO INTEIRA SUBSTITUÍDA ---
-// ATUALIZADO: Adicionado 'window.'
 window.populateReportFilters = function(filterOptions) {
-    // Selects Simples (Ano e Mês)
-    const reportsFilterYear = document.getElementById('reports-filter-year');
-    const reportsFilterMonth = document.getElementById('reports-filter-month');
-    
-    // Painéis Multi-Select (Empresa e CC)
-    const reportsCompanyPanel = document.getElementById('reports-company-panel');
-    const reportsCompanyText = document.getElementById('reports-company-text');
-    const reportsCostCenterPanel = document.getElementById('reports-cc-panel');
-    const reportsCostCenterText = document.getElementById('reports-cc-text');
-    
-    // Comparativo Selects
-    const compareYear1 = document.getElementById('compare-year1');
-    const compareYear2 = document.getElementById('compare-year2');
-    const compareMonth1 = document.getElementById('compare-month1');
-    const compareMonth2 = document.getElementById('compare-month2');
-
-    // Opções HTML (API agora envia dados puros)
-    const yearOptions = filterOptions.years.map(y => `<option>${y}</option>`).join('');
-    const monthOptions = filterOptions.months.map(m => `<option>${m}</option>`).join('');
-
-    // Popula Selects de Ano/Mês (Adiciona "Todos" aqui)
-    if(reportsFilterYear) reportsFilterYear.innerHTML = '<option value="Todos">Todos os Anos</option>' + yearOptions;
-    if(reportsFilterMonth) reportsFilterMonth.innerHTML = '<option value="Todos">Todos os Meses</option>' + monthOptions;
-    
-    // Popula selects do Comparativo (não precisam de "Todos")
-    if(compareYear1) compareYear1.innerHTML = yearOptions;
-    if(compareYear2) compareYear2.innerHTML = yearOptions;
-    if(compareMonth1) compareMonth1.innerHTML = monthOptions;
-    if(compareMonth2) compareMonth2.innerHTML = monthOptions;
-
-    // --- MULTI SELECTS ---
-    const selectLinksHtml = `
-        <div class="p-1 flex justify-between border-b">
-            <a href="#" class="text-xs text-blue-600 hover:underline select-all">Marcar Todos</a>
-            <a href="#" class="text-xs text-blue-600 hover:underline deselect-all">Desmarcar Todos</a>
-        </div>
-    `;
-
-    // Função helper para criar HTML de checkbox
-    const createCheckboxHtml = (items, itemClass) => {
-        return items.map(item => `
-            <label class="flex items-center space-x-2 p-1 rounded hover:bg-gray-100 ${itemClass} cursor-pointer">
-                <input type="checkbox" value="${item}" class="h-4 w-4 rounded border-gray-300 focus:ring-blue-700">
-                <span class="text-sm text-gray-700">${item}</span>
-            </label>
-        `).join('');
+    // Selects Simples
+    const fillSelect = (id, options, defaultText) => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = `<option value="Todos">${defaultText}</option>` + options.map(o => `<option>${o}</option>`).join('');
     };
     
-    // 1. Tipos de Folha
-    const reportsPayrollTypePanel = document.getElementById('reports-payroll-type-panel');
-    const reportsPayrollTypeText = document.getElementById('reports-payroll-type-text');
-    if (reportsPayrollTypePanel) {
-        const payrollHtml = createCheckboxHtml(filterOptions.payrollTypes || [], 'payroll-type-filter-label');
-        const listContainer = reportsPayrollTypePanel.querySelector('.payroll-type-list');
-        if(listContainer) {
-            listContainer.innerHTML = selectLinksHtml.replaceAll('select-all', 'payroll-type-select-all').replaceAll('deselect-all', 'payroll-type-deselect-all') + payrollHtml;
-        }
-        setupMultiSelectFilter(reportsPayrollTypePanel, reportsPayrollTypeText, 'Todos os Tipos', null, '.payroll-type-select-all', '.payroll-type-deselect-all', '.payroll-type-filter-label');
-    }
+    fillSelect('reports-filter-year', filterOptions.years, 'Todos os Anos');
+    fillSelect('reports-filter-month', filterOptions.months, 'Todos os Meses');
+    
+    // Comparativo (sem opção 'Todos')
+    const fillCompare = (id, options) => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = options.map(o => `<option>${o}</option>`).join('');
+    };
+    fillCompare('compare-year1', filterOptions.years);
+    fillCompare('compare-year2', filterOptions.years);
+    fillCompare('compare-month1', filterOptions.months);
+    fillCompare('compare-month2', filterOptions.months);
 
-    // 2. Lotações
-    const reportsLotationPanel = document.getElementById('reports-lotation-panel');
-    const reportsLotationText = document.getElementById('reports-lotation-text');
-    if (reportsLotationPanel) {
-        const lotationHtml = createCheckboxHtml(filterOptions.lotations || [], 'lotation-filter-label');
-        const listContainer = reportsLotationPanel.querySelector('.lotation-list');
-        if(listContainer) {
-            listContainer.insertAdjacentHTML('afterbegin', selectLinksHtml.replaceAll('select-all', 'lotation-select-all').replaceAll('deselect-all', 'lotation-deselect-all'));
-            listContainer.insertAdjacentHTML('beforeend', lotationHtml);
-        }
-        setupMultiSelectFilter(reportsLotationPanel, reportsLotationText, 'Todas as Lotações', '.lotation-search', '.lotation-select-all', '.lotation-deselect-all', '.lotation-filter-label');
-    }
+    // HTML Comum para os painéis
+    const headerHtml = `
+        <div class="p-2 border-b bg-white sticky top-0 z-10">
+            <input type="text" class="w-full border rounded p-1 text-sm filter-search mb-2" placeholder="Buscar...">
+            <div class="flex justify-between text-xs">
+                <a href="#" class="text-blue-600 hover:underline select-all">Marcar Todos</a>
+                <a href="#" class="text-blue-600 hover:underline deselect-all">Desmarcar Todos</a>
+            </div>
+        </div>
+        <div class="max-h-40 overflow-y-auto p-1 list-container">
+    `;
 
-    // 3. Eventos
-    const reportsEventPanel = document.getElementById('reports-event-panel');
-    const reportsEventText = document.getElementById('reports-event-text');
-    if (reportsEventPanel) {
-        const eventHtml = createCheckboxHtml(filterOptions.events || [], 'event-filter-label');
-        const listContainer = reportsEventPanel.querySelector('.event-list');
-        if(listContainer) {
-            listContainer.insertAdjacentHTML('afterbegin', selectLinksHtml.replaceAll('select-all', 'event-select-all').replaceAll('deselect-all', 'event-deselect-all'));
-            listContainer.insertAdjacentHTML('beforeend', eventHtml);
-        }
-        setupMultiSelectFilter(reportsEventPanel, reportsEventText, 'Todos os Eventos', '.event-search', '.event-select-all', '.event-deselect-all', '.event-filter-label');
-    }
+    const createItems = (items) => items.map(item => `
+        <label class="flex items-center space-x-2 p-1 rounded hover:bg-gray-100 cursor-pointer">
+            <input type="checkbox" value="${item}" class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked>
+            <span class="text-sm text-gray-700 break-words">${item}</span>
+        </label>
+    `).join('');
 
-    // 4. ATUALIZADO: Empresas
-    if (reportsCompanyPanel) {
-        const companyHtml = createCheckboxHtml(filterOptions.companies || [], 'company-filter-label');
-        const listContainer = reportsCompanyPanel.querySelector('.company-list');
-        if(listContainer) {
-            listContainer.insertAdjacentHTML('afterbegin', selectLinksHtml.replaceAll('select-all', 'company-select-all').replaceAll('deselect-all', 'company-deselect-all'));
-            listContainer.insertAdjacentHTML('beforeend', companyHtml);
-        }
-        setupMultiSelectFilter(reportsCompanyPanel, reportsCompanyText, 'Todas as Empresas', '.company-search', '.company-select-all', '.company-deselect-all', '.company-filter-label');
-    }
+    const footerHtml = `</div>`;
 
-    // 5. ATUALIZADO: Centros de Custo
-    if (reportsCostCenterPanel) {
-        const ccHtml = createCheckboxHtml(filterOptions.costCenters || [], 'cc-filter-label');
-        const listContainer = reportsCostCenterPanel.querySelector('.cc-list');
-        if(listContainer) {
-            listContainer.insertAdjacentHTML('afterbegin', selectLinksHtml.replaceAll('select-all', 'cc-select-all').replaceAll('deselect-all', 'cc-deselect-all'));
-            listContainer.insertAdjacentHTML('beforeend', ccHtml);
+    // Função para preencher painel
+    const fillPanel = (panelId, items) => {
+        const panel = document.getElementById(panelId);
+        if (panel) {
+            panel.innerHTML = headerHtml + createItems(items) + footerHtml;
+            // Atualiza texto inicial
+            window.updateMultiSelectFilterText(panel);
         }
-        setupMultiSelectFilter(reportsCostCenterPanel, reportsCostCenterText, 'Todos os Centros', '.cc-search', '.cc-select-all', '.cc-deselect-all', '.cc-filter-label');
-    }
+    };
+
+    // Preenche todos os painéis
+    fillPanel('reports-company-panel', filterOptions.companies);
+    fillPanel('reports-cc-panel', filterOptions.costCenters);
+    fillPanel('reports-lotation-panel', filterOptions.lotations);
+    fillPanel('reports-payroll-type-panel', filterOptions.payrollTypes);
+    fillPanel('reports-event-panel', filterOptions.events);
+    
+    // Preenche também o painel do Dashboard Inicial (se existir na tela)
+    fillPanel('payroll-type-filter-panel', filterOptions.payrollTypes);
 }
