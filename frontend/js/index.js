@@ -10,8 +10,7 @@ if (!token && !window.location.href.includes('login.html') && !window.location.h
 
 // --- URL BASE DA API ---
 // Certifique-se de que este IP está correto para o seu servidor
-const API_BASE_URL = 'http://192.168.8.11:3000'; 
-const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY'; // Mantenha sua chave aqui se usar AI
+const API_BASE_URL = 'http://localhost:8010';
 
 // --- ESTADO GLOBAL ---
 window.currentReportType = 'ano-mes';
@@ -20,18 +19,32 @@ window.activeCharts = {};
 window.fullReportsData = {};
 
 // --- UTILITÁRIOS DA API (Global) ---
+// Limiar (ms) a partir do qual avisamos no console/toast que uma chamada está lenta.
+// Ajuda a perceber, direto no navegador, quando um filtro está gerando uma consulta pesada.
+const SLOW_API_CALL_MS = 3000;
+
 window.callApi = async function(endpoint, method = 'GET', body = null) {
     const options = {
         method: method,
-        headers: { 
+        headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${localStorage.getItem('token')}` // <--- O SEGREDO ESTÁ AQUI
         },
     };
     if (body) options.body = JSON.stringify(body);
 
+    const startTime = performance.now();
     try {
         const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
+        const durationMs = performance.now() - startTime;
+        if (durationMs >= SLOW_API_CALL_MS) {
+            console.warn(`[API] ${endpoint} demorou ${(durationMs / 1000).toFixed(1)}s`);
+            if (typeof window.showToast === 'function') {
+                window.showToast(`Consulta demorou ${(durationMs / 1000).toFixed(1)}s — considere filtrar por um período menor.`, 'info');
+            }
+        } else if (window.DEBUG_API === true) {
+            console.log(`[API] ${endpoint} - ${durationMs.toFixed(0)}ms`);
+        }
 
         // Se o token for inválido (401) ou proibido (403)
         if (response.status === 401 || response.status === 403) {
@@ -180,10 +193,125 @@ window.saveEncargosHistorico = async function(event) {
     }
 }
 
+// --- CONTROLE DE ACESSO POR MENU (Global) ---
+// Lê o usuário salvo no login (localStorage) e confere se ele tem permissão
+// para o menu/relatório antes de exibir a tela. Isso é usado tanto para
+// esconder links no menu quanto como trava de segurança em switchView/showReport
+// (caso alguém tente navegar por um link antigo, atalho de teclado, etc.).
+window.getCurrentUser = function() {
+    try {
+        return JSON.parse(localStorage.getItem('user') || '{}');
+    } catch (e) {
+        return {};
+    }
+};
+
+window.isAdminUser = function() {
+    const u = window.getCurrentUser();
+    return u.is_admin === 1 || u.is_admin === true;
+};
+
+window.hasMenuAccess = function(menuKey) {
+    if (window.isAdminUser()) return true;
+    const u = window.getCurrentUser();
+    const menus = (u.menus_permitidos || '').split(',').map(s => s.trim()).filter(Boolean);
+    return menus.includes(menuKey);
+};
+
+window.hasReportAccess = function(reportType) {
+    if (window.isAdminUser()) return true;
+    const u = window.getCurrentUser();
+    const reports = (u.relatorios_permitidos || '').split(',').map(s => s.trim()).filter(Boolean);
+    return reports.includes(reportType);
+};
+
+// Mapa: viewId -> menu necessário para acessá-la. Views ausentes daqui
+// (ex.: "inicio") são liberadas para qualquer usuário autenticado.
+const VIEW_MENU_MAP = {
+    'cadastros': 'cadastros',
+    'cadastros-empresas': 'cadastros',
+    'cadastros-estabelecimentos': 'cadastros',
+    'cadastros-lotacoes': 'cadastros',
+    'cadastros-tiposfolha': 'cadastros',
+    'cadastros-cc': 'cadastros',
+    'cadastros-encargos': 'cadastros',
+    'cadastros-gestores': 'cadastros',
+    'relatorios': 'relatorios',
+    'lancamentos': 'lancamentos',
+    'movimentacoes-setor': 'movimentacoes-setor'
+};
+
+// Lista de todos os tipos de relatório existentes no menu "Relatórios" (mesmos
+// valores usados em data-report-type no HTML), na ordem em que aparecem no menu.
+const ALL_REPORT_TYPES = [
+    'custo-folha', 'extrato', 'ano-mes', 'empresa', 'centro-custo', 'lotacao', 'tipo-folha',
+    'evento-analitico', 'valores', 'comparativo-periodos', 'lotacao-colaborador-eventos',
+    'cc-lotacao-colaborador', 'folha-vs-colaboradores', 'colaboradores-por-setor', 'impacto-headcount'
+];
+
+window.hasViewAccess = function(viewId) {
+    // "Usuários" é sempre restrito a administradores, independente do menu "cadastros".
+    if (viewId === 'cadastros-usuarios') return window.isAdminUser();
+    const requiredMenu = VIEW_MENU_MAP[viewId];
+    if (!requiredMenu) return true;
+    return window.hasMenuAccess(requiredMenu);
+};
+
+// Mostra a tela de "Acesso Bloqueado" no lugar da view pedida.
+window.showAccessBlocked = function(message) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+
+    const blockedView = document.getElementById('acesso-bloqueado-view');
+    const messageEl = document.getElementById('acesso-bloqueado-message');
+    if (messageEl) {
+        messageEl.textContent = message || 'Você não tem permissão para acessar esta área do sistema. Fale com um administrador se precisar desse acesso.';
+    }
+    if (blockedView) blockedView.classList.add('active');
+
+    window.currentView = 'acesso-bloqueado';
+};
+
+// Esconde do menu tudo que o usuário logado não tem permissão de acessar,
+// para ele nem ver links em que vai bater em "Acesso Bloqueado".
+window.applyMenuPermissionsToNav = function() {
+    const isAdmin = window.isAdminUser();
+
+    // Itens do menu principal controlados por menus_permitidos
+    document.querySelectorAll('.nav-link[data-view]').forEach(link => {
+        const viewId = link.dataset.view;
+        if (viewId === 'inicio') return; // sempre visível
+        const li = link.closest('li');
+        if (!li) return;
+        if (!window.hasViewAccess(viewId)) {
+            li.style.display = 'none';
+        }
+    });
+
+    // Itens do submenu "Relatórios" controlados por relatorios_permitidos
+    if (!isAdmin) {
+        document.querySelectorAll('.report-link[data-report-type]').forEach(link => {
+            const reportType = link.dataset.reportType;
+            if (!window.hasReportAccess(reportType)) {
+                const li = link.closest('li');
+                if (li) li.style.display = 'none';
+            }
+        });
+    }
+};
+
 // --- NAVEGAÇÃO (Global) ---
 window.switchView = function(viewId) {
-    console.log("Trocando para view:", viewId); 
-    
+    console.log("Trocando para view:", viewId);
+
+    // Trava de segurança: se o usuário não tem permissão para esta view,
+    // mostra a tela de acesso bloqueado em vez de carregar o conteúdo.
+    if (!window.hasViewAccess(viewId)) {
+        window.showAccessBlocked();
+        if (window.showToast) window.showToast('Acesso negado: você não tem permissão para esta área.', 'error');
+        return;
+    }
+
     const mainViews = document.querySelectorAll('.view');
     const navLinks = document.querySelectorAll('.nav-link');
 
@@ -208,13 +336,105 @@ window.switchView = function(viewId) {
         if (window.loadInicioData) window.loadInicioData();
     } else if (viewId === 'relatorios') {
         if (window.loadReportFilters) window.loadReportFilters();
-        if (window.showReport) window.showReport(window.currentReportType);
+        // Se o relatório padrão atual não é permitido para este usuário, troca
+        // para o primeiro relatório ao qual ele realmente tem acesso.
+        let reportToShow = window.currentReportType;
+        if (!window.hasReportAccess(reportToShow)) {
+            reportToShow = ALL_REPORT_TYPES.find(rt => window.hasReportAccess(rt)) || null;
+        }
+        if (window.showReport) {
+            if (reportToShow) {
+                window.showReport(reportToShow);
+            } else {
+                window.showAccessBlocked('Você ainda não tem acesso a nenhum relatório. Fale com um administrador.');
+            }
+        }
     } else if (viewId.startsWith('cadastros-')) {
         const cadastroType = viewId.split('-')[1];
         if (cadastroType === 'cc') window.loadCCData();
         else if (cadastroType === 'lotacoes') window.loadLotacoesStatus();
         else if (cadastroType === 'usuarios') window.loadUsers(); // <--- ADICIONE ISSO
+        else if (cadastroType === 'gestores') window.loadGestoresCadastro();
+        else if (cadastroType === 'encargos') { if (window.loadEncargosConfig) window.loadEncargosConfig(); }
         else if (['empresas', 'estabelecimentos', 'tiposfolha'].includes(cadastroType)) window.loadGenericCadastro(cadastroType);
+    } else if (viewId === 'movimentacoes-setor') {
+        if (window.loadMovimentacoesSetor) window.loadMovimentacoesSetor();
+    }
+
+    // Atualiza a URL com o menu aberto (os relatórios são tratados no showReport,
+    // que sabe qual relatório específico está sendo exibido).
+    if (viewId !== 'relatorios' && window.setRouteHash) {
+        window.setRouteHash(window.hashDaView(viewId));
+    }
+};
+
+// --- ROTEAMENTO POR HASH (a URL reflete o menu aberto) ---
+// Ex.: #/inicio, #/cadastros, #/cadastros/lotacoes, #/relatorios/custo-folha,
+// #/lancamentos, #/movimentacoes-setor. Usamos hash (#) porque funciona sem
+// nenhuma mudança no servidor e sobrevive ao F5 (o hash não é enviado ao
+// servidor; o index.html carrega e o JS restaura a tela pela URL).
+window._hashInterno = false;
+
+// Escreve o hash marcando que a mudança veio da própria navegação, para o
+// listener de 'hashchange' não re-navegar (evita loop e recarga dupla).
+window.setRouteHash = function(hash) {
+    if (!hash || location.hash === hash) return;
+    window._hashInterno = true;
+    location.hash = hash;
+};
+
+// Converte um viewId em hash.
+window.hashDaView = function(viewId) {
+    if (!viewId || viewId === 'inicio') return '#/inicio';
+    if (viewId === 'cadastros') return '#/cadastros';
+    if (viewId.indexOf('cadastros-') === 0) return '#/cadastros/' + viewId.slice('cadastros-'.length);
+    if (viewId === 'relatorios') return '#/relatorios';
+    return '#/' + viewId;
+};
+
+// Lê a URL atual e navega para a tela correspondente (usado no carregamento e
+// quando o usuário usa voltar/avançar do navegador ou digita/cola a URL).
+window.applyHashRoute = function() {
+    const bruto = (location.hash || '').replace(/^#\/?/, ''); // ex.: "relatorios/custo-folha"
+    const partes = bruto.split('/').filter(Boolean);
+    if (partes.length === 0) { window.switchView('inicio'); return; }
+    const seg = partes[0];
+    if (seg === 'relatorios') {
+        // Define o relatório antes de abrir a tela para já mostrar o certo.
+        if (partes[1]) window.currentReportType = partes[1];
+        window.switchView('relatorios');
+    } else if (seg === 'cadastros') {
+        window.switchView(partes[1] ? 'cadastros-' + partes[1] : 'cadastros');
+    } else {
+        window.switchView(seg); // inicio, lancamentos, movimentacoes-setor
+    }
+};
+
+// --- CADASTRO DE ENCARGOS (% sobre a massa salarial) ---
+window.loadEncargosConfig = async function() {
+    const input = document.getElementById('encargos-percentual');
+    if (!input) return;
+    try {
+        const cfg = await window.callApi('/config/encargos', 'GET');
+        input.value = (cfg && cfg.percentual != null) ? cfg.percentual : '';
+    } catch (err) {
+        if (window.showToast) window.showToast('Erro ao carregar encargos: ' + err.message, 'error');
+    }
+};
+
+window.saveEncargosConfig = async function() {
+    const input = document.getElementById('encargos-percentual');
+    if (!input) return;
+    const percentual = parseFloat(input.value);
+    if (isNaN(percentual) || percentual < 0 || percentual > 1000) {
+        if (window.showToast) window.showToast('Informe um percentual válido (0 a 1000).', 'error');
+        return;
+    }
+    try {
+        await window.callApi('/config/encargos', 'PUT', { percentual });
+        if (window.showToast) window.showToast('Percentual de encargos salvo!', 'success');
+    } catch (err) {
+        if (window.showToast) window.showToast('Erro ao salvar: ' + err.message, 'error');
     }
 };
 
@@ -338,20 +558,699 @@ window.openEncargosModal = async function(idEstabelecimento, nomeEstabelecimento
     modal.classList.remove('hidden');
 };
 
+// Estado da lista de lotações (dados completos + busca + página atual).
+// Guardado fora da função pra não precisar rebuscar na API a cada digitação
+// na busca ou clique de "Próxima/Anterior" - só o /lotacoes/status inicial
+// (já cacheado no backend) bate no banco; paginação e busca são só em memória.
+let lotacoesState = { data: [], page: 1, pageSize: 25, searchTerm: '' };
+
+// Diretório de gestores já cadastrados (Cadastros > Gestores), usado pra
+// montar o <select> de "escolher gestor" de cada lotação abaixo - a tela de
+// lotações não aceita mais digitar nome/e-mail direto, só selecionar um
+// gestor que já existe no cadastro (ver window.loadGestoresCadastro).
+// Carregado uma vez junto com a lista de lotações.
+let gestoresDiretorio = [];
+
 window.loadLotacoesStatus = async function() {
     const container = document.getElementById('cadastros-lotacoes-view');
     window.showLoader(container);
     try {
-        const data = await window.callApi('/lotacoes/status');
-        let listHTML = `<div class="bg-white rounded-xl shadow-lg p-6 md:p-8"><h2 class="text-2xl font-bold text-gray-700 mb-4">Estado das Lotações</h2><ul class="divide-y divide-gray-200 max-h-[600px] overflow-y-auto">`;
-        data.sort((a, b) => a.nome.localeCompare(b.nome)).forEach(item => {
+        const [data] = await Promise.all([
+            window.callApi('/lotacoes/status'),
+            window.callApi('/gestores').then((lista) => { gestoresDiretorio = lista || []; }).catch(() => { gestoresDiretorio = []; })
+        ]);
+        data.sort((a, b) => a.nome.localeCompare(b.nome));
+
+        // Pré-calcula o texto de busca (nome + empresa + estabelecimento + CC)
+        // de cada item uma única vez, em vez de recalcular a cada tecla digitada.
+        data.forEach((item) => {
+            item._searchText = [item.nome, item.empresa, item.estabelecimento, item.centroCusto]
+                .filter(Boolean).join(' ').toLowerCase();
+        });
+
+        lotacoesState = { data, page: 1, pageSize: 25, searchTerm: '' };
+
+        container.innerHTML = `
+            <div class="bg-white rounded-xl shadow-lg p-6 md:p-8">
+                <div class="flex flex-wrap justify-between items-center gap-3 mb-4">
+                    <h2 class="text-2xl font-bold text-gray-700">Estado das Lotações</h2>
+                    <div class="relative">
+                        <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+                        <input type="text" id="lotacoes-search-input" placeholder="Buscar lotação, empresa, CC..." class="border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm w-72" oninput="window.filterLotacoesList(this.value)">
+                    </div>
+                </div>
+                ${gestoresDiretorio.length === 0 ? `<p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">Nenhum gestor cadastrado ainda - cadastre em <strong>Cadastros &gt; Gestores</strong> antes de vincular um gestor às lotações abaixo.</p>` : ''}
+                <ul id="lotacoes-list" class="divide-y divide-gray-200"></ul>
+                <div id="lotacoes-pagination" class="flex flex-wrap items-center justify-between gap-2 mt-4 pt-4 border-t border-gray-200"></div>
+            </div>`;
+
+        window.renderLotacoesPage();
+    } catch (err) { window.showToast(err.message, 'error'); } finally { window.hideLoader(container); }
+};
+
+// Aplica a busca (sobre lotacoesState.data) e devolve só os itens que batem.
+function getFilteredLotacoes() {
+    const termo = (lotacoesState.searchTerm || '').trim().toLowerCase();
+    if (!termo) return lotacoesState.data;
+    return lotacoesState.data.filter((item) => item._searchText.includes(termo));
+}
+
+// Renderiza só a página atual (25 itens por vez) da lista já filtrada, em vez
+// de jogar tudo no DOM de uma vez - isso é o que efetivamente melhora o
+// desempenho de renderização quando a lista tem muitos itens.
+window.renderLotacoesPage = function() {
+    const list = document.getElementById('lotacoes-list');
+    const paginationEl = document.getElementById('lotacoes-pagination');
+    if (!list) return;
+
+    const filtered = getFilteredLotacoes();
+    const totalPaginas = Math.max(1, Math.ceil(filtered.length / lotacoesState.pageSize));
+    if (lotacoesState.page > totalPaginas) lotacoesState.page = totalPaginas;
+    if (lotacoesState.page < 1) lotacoesState.page = 1;
+
+    const inicio = (lotacoesState.page - 1) * lotacoesState.pageSize;
+    const pageItems = filtered.slice(inicio, inicio + lotacoesState.pageSize);
+
+    if (pageItems.length === 0) {
+        list.innerHTML = `<li class="py-8 text-center text-gray-500">Nenhuma lotação encontrada.</li>`;
+    } else {
+        list.innerHTML = pageItems.map((item) => {
             const color = item.isAssociated ? '#51cd73' : '#eddf43';
             const ccInfo = item.centroCusto ? `<span class="text-xs font-bold text-gray-500 ml-2">CC: ${item.centroCusto}</span>` : '';
-            listHTML += `<li class="py-3 flex items-center gap-3"><span class="h-3 w-3 rounded-full" style="background-color: ${color};"></span><div class="flex flex-col"><span class="text-gray-800 font-medium">${item.nome}</span><span class="text-xs text-gray-500">${item.empresa} - ${item.estabelecimento} ${ccInfo}</span></div></li>`;
+            const nomeAttr = (item.nome || '').replace(/"/g, '&quot;');
+            const gestoresVinculados = item.gestores || [];
+
+            // Um "chip" por gestor já vinculado a esta lotação, cada um com um
+            // "x" pra remover só aquele vínculo (window.removerGestorDaLotacao)
+            // - não mexe nos outros gestores da mesma lotação.
+            const chips = gestoresVinculados.map((g) => {
+                const rotuloChip = (g.nome || g.email).replace(/"/g, '&quot;');
+                return `<span class="inline-flex items-center gap-1 bg-sky-50 text-sky-800 text-xs font-medium pl-2 pr-1 py-1 rounded-full border border-sky-200">
+                    ${rotuloChip}
+                    <button type="button" class="text-sky-500 hover:text-red-600" onclick="window.removerGestorDaLotacao(this, ${g.id})" title="Remover este gestor da lotação"><i class="fas fa-times"></i></button>
+                </span>`;
+            }).join('');
+
+            // Dropdown com os gestores já cadastrados (Cadastros > Gestores)
+            // que AINDA não estão vinculados a esta lotação - escolher um e
+            // clicar "Adicionar" vincula mais um gestor à mesma lotação (uma
+            // lotação pode ter vários). Não existe mais campo de texto livre
+            // aqui de propósito, pra evitar e-mail digitado errado ou
+            // divergente do que já está no cadastro central de gestores.
+            const idsVinculados = new Set(gestoresVinculados.map((g) => String(g.id)));
+            const opcoesGestor = gestoresDiretorio
+                .filter((g) => !idsVinculados.has(String(g.id)))
+                .map((g) => {
+                    const rotulo = g.nome ? `${g.nome} (${g.email})` : g.email;
+                    return `<option value="${g.id}">${rotulo}</option>`;
+                }).join('');
+
+            return `<li class="py-3 flex flex-wrap items-center gap-3" data-nome-lotacao="${nomeAttr}">
+                <span class="h-3 w-3 rounded-full flex-shrink-0" style="background-color: ${color};"></span>
+                <div class="flex flex-col flex-1 min-w-[200px]">
+                    <span class="text-gray-800 font-medium">${item.nome}</span>
+                    <span class="text-xs text-gray-500">${item.empresa} - ${item.estabelecimento} ${ccInfo}</span>
+                    <div class="flex flex-wrap gap-1 mt-1">${chips || '<span class="text-xs text-gray-400 italic">Sem gestor vinculado</span>'}</div>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <select class="gestor-select border border-gray-300 rounded px-2 py-1 text-sm w-64">
+                        <option value="">Adicionar gestor...</option>
+                        ${opcoesGestor}
+                    </select>
+                    <button type="button" class="text-blue-600 hover:underline text-xs font-bold" onclick="window.saveLotacaoGestorEmail(this)">Adicionar</button>
+                </div>
+            </li>`;
+        }).join('');
+    }
+
+    if (paginationEl) {
+        const inicioExibido = filtered.length === 0 ? 0 : inicio + 1;
+        const fimExibido = Math.min(inicio + lotacoesState.pageSize, filtered.length);
+        paginationEl.innerHTML = `
+            <span class="text-xs text-gray-500">Mostrando ${inicioExibido}-${fimExibido} de ${filtered.length}</span>
+            <div class="flex items-center gap-2">
+                <button type="button" onclick="window.mudarPaginaLotacoes(-1)" ${lotacoesState.page <= 1 ? 'disabled' : ''} class="px-3 py-1 text-sm border border-gray-300 rounded disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50">Anterior</button>
+                <span class="text-xs text-gray-500">Página ${lotacoesState.page} de ${totalPaginas}</span>
+                <button type="button" onclick="window.mudarPaginaLotacoes(1)" ${lotacoesState.page >= totalPaginas ? 'disabled' : ''} class="px-3 py-1 text-sm border border-gray-300 rounded disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50">Próxima</button>
+            </div>`;
+    }
+};
+
+window.mudarPaginaLotacoes = function(delta) {
+    lotacoesState.page += delta;
+    window.renderLotacoesPage();
+};
+
+// Filtra a lista de lotações já carregada, sem precisar chamar a API de novo.
+// Usa a função debounce global definida em filters.js. Toda busca nova volta
+// para a página 1 (senão a página atual pode não existir mais no resultado filtrado).
+const debouncedFilterLotacoes = (typeof debounce === 'function')
+    ? debounce((term) => { lotacoesState.searchTerm = term; lotacoesState.page = 1; window.renderLotacoesPage(); }, 150)
+    : (term) => { lotacoesState.searchTerm = term; lotacoesState.page = 1; window.renderLotacoesPage(); };
+
+window.filterLotacoesList = function(term) {
+    debouncedFilterLotacoes(term);
+};
+
+// Adiciona o gestor escolhido no <select> aos gestores já vinculados a uma
+// lotação (usado pelo botão "Adicionar" na lista acima) - uma lotação pode
+// ter vários gestores, então isso NÃO substitui os que já estavam lá. O nome
+// da lotação vem do atributo data-nome-lotacao do <li> pai, em vez de um id
+// no elemento, porque nome_lotacao pode ter espaços/caracteres não seguros
+// pra usar direto como id de elemento HTML.
+window.saveLotacaoGestorEmail = async function(buttonEl) {
+    const li = buttonEl.closest('li');
+    const nomeLotacao = li.dataset.nomeLotacao;
+    const select = li.querySelector('.gestor-select');
+    const idGestor = select ? select.value : '';
+
+    if (!idGestor) {
+        window.showToast('Escolha um gestor antes de adicionar.', 'error');
+        return;
+    }
+
+    try {
+        await window.callApi('/lotacoes/gestores', 'PUT', { nome_lotacao: nomeLotacao, id_gestor: idGestor });
+        window.showToast('Gestor vinculado com sucesso!', 'success');
+        // Atualiza o item em memória e re-renderiza só essa linha, pra já
+        // mostrar o chip do gestor adicionado sem precisar recarregar a tela toda.
+        const gestor = gestoresDiretorio.find((g) => String(g.id) === String(idGestor));
+        const item = lotacoesState.data.find((i) => i.nome === nomeLotacao);
+        if (item && gestor) {
+            item.gestores = item.gestores || [];
+            if (!item.gestores.some((g) => String(g.id) === String(gestor.id))) {
+                item.gestores.push({ id: gestor.id, nome: gestor.nome, email: gestor.email });
+            }
+        }
+        window.renderLotacoesPage();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
+};
+
+// Remove um gestor específico de uma lotação (botão "x" de cada chip) - não
+// exclui o gestor do diretório (Cadastros > Gestores), nem afeta os outros
+// gestores vinculados à mesma lotação.
+window.removerGestorDaLotacao = async function(buttonEl, idGestor) {
+    const li = buttonEl.closest('li');
+    const nomeLotacao = li.dataset.nomeLotacao;
+
+    if (!confirm('Remover este gestor desta lotação?')) return;
+
+    try {
+        await window.callApi('/lotacoes/gestores', 'DELETE', { nome_lotacao: nomeLotacao, id_gestor: idGestor });
+        window.showToast('Gestor removido da lotação.', 'success');
+        const item = lotacoesState.data.find((i) => i.nome === nomeLotacao);
+        if (item && item.gestores) {
+            item.gestores = item.gestores.filter((g) => String(g.id) !== String(idGestor));
+        }
+        window.renderLotacoesPage();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
+};
+
+// =============================================================
+// --- CADASTROS > GESTORES (diretório central de nome + e-mail) ---
+// CRUD simples: cadastra o gestor aqui uma vez e depois só ESCOLHE ele no
+// dropdown de cada lotação em Cadastros > Lotações (ver
+// window.loadLotacoesStatus acima) - evita redigitar/errar o e-mail em cada
+// lotação que a mesma pessoa administra.
+// =============================================================
+
+window.gestoresCadastroState = { data: [] };
+
+window.loadGestoresCadastro = async function() {
+    const container = document.getElementById('cadastros-gestores-view');
+    if (!container) return;
+    window.showLoader(container);
+    try {
+        const data = await window.callApi('/gestores');
+        window.gestoresCadastroState = { data };
+
+        container.innerHTML = `
+            <div class="bg-white rounded-xl shadow-lg p-6 md:p-8 mb-6">
+                <h2 id="gestor-form-title" class="text-xl font-bold text-gray-700 mb-4">Novo Gestor</h2>
+                <form id="form-gestor" class="flex flex-wrap items-end gap-3" onsubmit="window.saveGestor(event)">
+                    <input type="hidden" id="gestor-id" value="">
+                    <div class="flex flex-col">
+                        <label class="text-xs text-gray-500 mb-1">Nome</label>
+                        <input type="text" id="gestor-nome" required class="border border-gray-300 rounded px-3 py-2 text-sm w-56">
+                    </div>
+                    <div class="flex flex-col">
+                        <label class="text-xs text-gray-500 mb-1">E-mail</label>
+                        <input type="email" id="gestor-email" required class="border border-gray-300 rounded px-3 py-2 text-sm w-64">
+                    </div>
+                    <button type="submit" id="btn-save-gestor" class="bg-green-600 text-white font-bold px-4 py-2 rounded hover:bg-green-700 text-sm"><i class="fas fa-plus mr-1"></i> Adicionar</button>
+                    <button type="button" id="btn-cancel-gestor" class="hidden text-gray-500 text-sm hover:underline" onclick="window.resetGestorForm()">Cancelar edição</button>
+                </form>
+            </div>
+            <div class="bg-white rounded-xl shadow-lg p-6 md:p-8">
+                <h2 class="text-2xl font-bold text-gray-700 mb-4">Gestores Cadastrados</h2>
+                <ul id="gestores-list" class="divide-y divide-gray-200"></ul>
+            </div>`;
+
+        window.renderGestoresList();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    } finally {
+        window.hideLoader(container);
+    }
+};
+
+window.renderGestoresList = function() {
+    const list = document.getElementById('gestores-list');
+    if (!list) return;
+    const data = window.gestoresCadastroState.data || [];
+
+    if (data.length === 0) {
+        list.innerHTML = '<li class="py-8 text-center text-gray-500">Nenhum gestor cadastrado ainda.</li>';
+        return;
+    }
+
+    list.innerHTML = data.map((g) => {
+        const gestorObj = JSON.stringify(g).replace(/"/g, '&quot;');
+        return `<li class="py-3 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex flex-col">
+                <span class="text-gray-800 font-medium">${g.nome || '(sem nome)'}</span>
+                <span class="text-xs text-gray-500">${g.email}</span>
+            </div>
+            <div class="flex items-center gap-3">
+                <button type="button" class="text-blue-600 hover:text-blue-900 text-sm font-bold" onclick="window.editGestor(${gestorObj})" title="Editar"><i class="fas fa-edit"></i></button>
+                <button type="button" class="text-red-600 hover:text-red-900 text-sm font-bold" onclick="window.deleteGestor(${g.id})" title="Excluir"><i class="fas fa-trash"></i></button>
+            </div>
+        </li>`;
+    }).join('');
+};
+
+window.editGestor = function(gestor) {
+    document.getElementById('gestor-id').value = gestor.id;
+    document.getElementById('gestor-nome').value = gestor.nome || '';
+    document.getElementById('gestor-email').value = gestor.email || '';
+    document.getElementById('gestor-form-title').textContent = 'Editar Gestor';
+    document.getElementById('btn-save-gestor').innerHTML = '<i class="fas fa-save mr-1"></i> Atualizar';
+    document.getElementById('btn-cancel-gestor').classList.remove('hidden');
+};
+
+window.resetGestorForm = function() {
+    const form = document.getElementById('form-gestor');
+    if (form) form.reset();
+    document.getElementById('gestor-id').value = '';
+    document.getElementById('gestor-form-title').textContent = 'Novo Gestor';
+    document.getElementById('btn-save-gestor').innerHTML = '<i class="fas fa-plus mr-1"></i> Adicionar';
+    document.getElementById('btn-cancel-gestor').classList.add('hidden');
+};
+
+window.saveGestor = async function(e) {
+    e.preventDefault();
+    const id = document.getElementById('gestor-id').value;
+    const nome_gestor = document.getElementById('gestor-nome').value.trim();
+    const email_gestor = document.getElementById('gestor-email').value.trim();
+
+    if (!nome_gestor || !email_gestor) {
+        window.showToast('Informe o nome e o e-mail do gestor.', 'error');
+        return;
+    }
+
+    try {
+        if (id) {
+            await window.callApi(`/gestores/${id}`, 'PUT', { nome_gestor, email_gestor });
+            window.showToast('Gestor atualizado!', 'success');
+        } else {
+            await window.callApi('/gestores', 'POST', { nome_gestor, email_gestor });
+            window.showToast('Gestor cadastrado!', 'success');
+        }
+        window.resetGestorForm();
+        window.loadGestoresCadastro();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
+};
+
+window.deleteGestor = async function(id) {
+    if (!confirm('Tem certeza que deseja excluir este gestor?')) return;
+    try {
+        await window.callApi(`/gestores/${id}`, 'DELETE');
+        window.showToast('Gestor removido.', 'success');
+        window.loadGestoresCadastro();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
+};
+
+// --- MOVIMENTAÇÕES DE SETOR ---
+// Lista os e-mails já enviados aos gestores (resumo mensal da folha do
+// setor + lista de colaboradores) e o status da resposta de cada um.
+// IMPORTANTE: pendências sinalizadas aqui são só um AVISO para o
+// Departamento Pessoal revisar - este sistema não altera a lotação de
+// ninguém automaticamente.
+//
+// Estado da lista (dados completos + filtros + página atual), guardado fora
+// da função pra não precisar rebuscar na API a cada filtro/clique de
+// paginação - mesmo padrão já usado em lotacoesState (loadLotacoesStatus).
+let movSetorState = { data: [], page: 1, pageSize: 25, filtroEmpresa: '', filtroLotacao: '', filtroGestor: '' };
+
+window.loadMovimentacoesSetor = async function() {
+    const container = document.getElementById('movimentacoes-setor-view');
+    window.showLoader(container);
+    try {
+        const envios = await window.callApi('/movimentacoes-setor/admin/envios');
+
+        // Sugere por padrão o mês anterior ao atual (mesmo período que o
+        // disparo automático usa), já que normalmente é a folha mais recente
+        // fechada quando alguém entra nessa tela.
+        const hoje = new Date();
+        let mesPadrao = hoje.getMonth(); // getMonth() é 0-indexado = mês anterior em base 1
+        let anoPadrao = hoje.getFullYear();
+        if (mesPadrao === 0) { mesPadrao = 12; anoPadrao -= 1; }
+
+        const mesesNomes = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+        const anosOptions = [anoPadrao - 1, anoPadrao, anoPadrao + 1]
+            .map((a) => `<option value="${a}" ${a === anoPadrao ? 'selected' : ''}>${a}</option>`).join('');
+        const mesesOptions = mesesNomes
+            .map((nome, i) => `<option value="${i + 1}" ${(i + 1) === mesPadrao ? 'selected' : ''}>${nome}</option>`).join('');
+
+        movSetorState = { data: envios || [], page: 1, pageSize: 25, filtroEmpresa: '', filtroLotacao: '', filtroGestor: '' };
+
+        // Opções dos filtros - só os valores que realmente aparecem nos envios
+        // carregados. Um envio agora pode cobrir várias lotações/empresas
+        // (consolidado por gestor), então usa e.lotacoes/e.empresas (arrays)
+        // em vez do texto já unido, senão "Lotação A, Lotação B" viraria uma
+        // única opção estranha no lugar de duas selecionáveis.
+        const empresasOpts = [...new Set(movSetorState.data.flatMap((e) => e.empresas || []).filter(Boolean))].sort();
+        const lotacoesOpts = [...new Set(movSetorState.data.flatMap((e) => e.lotacoes || []).filter(Boolean))].sort();
+        const gestoresOpts = [...new Set(movSetorState.data.map((e) => e.emailGestor).filter(Boolean))].sort();
+        const escapar = (v) => String(v).replace(/"/g, '&quot;');
+
+        let html = `
+            <div class="bg-white rounded-xl shadow-lg p-6 md:p-8 mb-6">
+                <div class="flex flex-wrap justify-between items-center gap-4">
+                    <div>
+                        <h2 class="text-2xl font-bold text-gray-700">Movimentações de Setor</h2>
+                        <p class="text-gray-500 text-sm max-w-2xl">E-mails enviados aos gestores com o resumo da folha e a lista de colaboradores do setor. Pendências sinalizadas pelos gestores são só um aviso - a correção da lotação é feita pelo Departamento Pessoal por fora, este sistema não altera nada automaticamente.</p>
+                    </div>
+                    <div class="flex items-end gap-2">
+                        <div>
+                            <label class="block text-xs font-bold text-gray-500 mb-1">Mês</label>
+                            <select id="movsetor-mes" class="border border-gray-300 rounded px-2 py-1 text-sm">${mesesOptions}</select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-500 mb-1">Ano</label>
+                            <select id="movsetor-ano" class="border border-gray-300 rounded px-2 py-1 text-sm">${anosOptions}</select>
+                        </div>
+                        <button type="button" onclick="window.enviarMovimentacoesDoMes()" class="bg-sky-600 hover:bg-sky-700 text-white font-bold px-4 py-2 rounded text-sm whitespace-nowrap">
+                            <i class="fas fa-paper-plane mr-1"></i> Enviar e-mails do mês
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-lg p-6 md:p-8">`;
+
+        if (!envios || envios.length === 0) {
+            html += `<p class="text-center text-gray-500 py-8">Nenhum envio ainda. Cadastre o e-mail do gestor em Cadastros &gt; Lotações e clique em "Enviar e-mails do mês".</p>`;
+        } else {
+            html += `
+                <div class="flex flex-wrap items-end gap-3 mb-4 pb-4 border-b border-gray-200">
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 mb-1">Empresa</label>
+                        <select id="movsetor-filtro-empresa" onchange="window.filtrarMovSetor()" class="border border-gray-300 rounded px-2 py-1 text-sm min-w-[160px]">
+                            <option value="">Todas</option>
+                            ${empresasOpts.map((v) => `<option value="${escapar(v)}">${v}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 mb-1">Lotação</label>
+                        <select id="movsetor-filtro-lotacao" onchange="window.filtrarMovSetor()" class="border border-gray-300 rounded px-2 py-1 text-sm min-w-[160px]">
+                            <option value="">Todas</option>
+                            ${lotacoesOpts.map((v) => `<option value="${escapar(v)}">${v}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 mb-1">E-mail do Gestor</label>
+                        <select id="movsetor-filtro-gestor" onchange="window.filtrarMovSetor()" class="border border-gray-300 rounded px-2 py-1 text-sm min-w-[160px]">
+                            <option value="">Todos</option>
+                            ${gestoresOpts.map((v) => `<option value="${escapar(v)}">${v}</option>`).join('')}
+                        </select>
+                    </div>
+                    <button type="button" onclick="window.limparFiltrosMovSetor()" class="text-xs text-gray-500 hover:underline mb-1">Limpar filtros</button>
+                </div>
+                <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-4 py-2 text-left text-xs font-bold text-gray-500 uppercase">Lotações</th>
+                        <th class="px-4 py-2 text-left text-xs font-bold text-gray-500 uppercase">Empresas</th>
+                        <th class="px-4 py-2 text-left text-xs font-bold text-gray-500 uppercase">Competência</th>
+                        <th class="px-4 py-2 text-left text-xs font-bold text-gray-500 uppercase">Gestor</th>
+                        <th class="px-4 py-2 text-left text-xs font-bold text-gray-500 uppercase">Enviado em</th>
+                        <th class="px-4 py-2 text-center text-xs font-bold text-gray-500 uppercase">Colaboradores</th>
+                        <th class="px-4 py-2 text-left text-xs font-bold text-gray-500 uppercase">Status</th>
+                        <th class="px-4 py-2 text-right text-xs font-bold text-gray-500 uppercase">Ações</th>
+                    </tr>
+                </thead>
+                <tbody id="movsetor-tbody" class="divide-y divide-gray-100"></tbody>
+            </table>
+            <div id="movsetor-pagination" class="flex flex-wrap items-center justify-between gap-2 mt-4 pt-4 border-t border-gray-200"></div>`;
+        }
+
+        html += `</div>`;
+        container.innerHTML = html;
+
+        if (envios && envios.length > 0) window.renderMovSetorPage();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    } finally {
+        window.hideLoader(container);
+    }
+};
+
+// Aplica os filtros (empresa/lotação/e-mail do gestor) sobre movSetorState.data.
+// Empresa/lotação usam .includes() nos arrays (não igualdade direta) porque
+// um envio consolidado pode cobrir várias lotações/empresas do mesmo gestor.
+function getFilteredMovSetor() {
+    return movSetorState.data.filter((e) => {
+        if (movSetorState.filtroEmpresa && !(e.empresas || []).includes(movSetorState.filtroEmpresa)) return false;
+        if (movSetorState.filtroLotacao && !(e.lotacoes || []).includes(movSetorState.filtroLotacao)) return false;
+        if (movSetorState.filtroGestor && e.emailGestor !== movSetorState.filtroGestor) return false;
+        return true;
+    });
+}
+
+// Renderiza só a página atual (25 por vez) da lista já filtrada, em vez de
+// jogar tudo no DOM de uma vez - mesmo padrão de performance usado em
+// Cadastros > Lotações (window.renderLotacoesPage).
+window.renderMovSetorPage = function() {
+    const tbody = document.getElementById('movsetor-tbody');
+    const paginationEl = document.getElementById('movsetor-pagination');
+    if (!tbody) return;
+
+    const filtered = getFilteredMovSetor();
+    const totalPaginas = Math.max(1, Math.ceil(filtered.length / movSetorState.pageSize));
+    if (movSetorState.page > totalPaginas) movSetorState.page = totalPaginas;
+    if (movSetorState.page < 1) movSetorState.page = 1;
+
+    const inicio = (movSetorState.page - 1) * movSetorState.pageSize;
+    const pageItems = filtered.slice(inicio, inicio + movSetorState.pageSize);
+
+    if (pageItems.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500">Nenhum envio encontrado com esses filtros.</td></tr>`;
+    } else {
+        let html = '';
+        pageItems.forEach((e, idx) => {
+            const dataEnvio = e.dataEnvio ? new Date(e.dataEnvio).toLocaleDateString('pt-BR') : '-';
+            let badge = `<span class="bg-gray-100 text-gray-600 text-xs font-bold px-2 py-1 rounded-full">Aguardando resposta</span>`;
+            if (e.status === 'ok') {
+                badge = `<span class="bg-green-100 text-green-700 text-xs font-bold px-2 py-1 rounded-full">OK - sem pendências</span>`;
+            } else if (e.status === 'pendencias') {
+                badge = `<span class="bg-amber-100 text-amber-700 text-xs font-bold px-2 py-1 rounded-full cursor-pointer" onclick="window.toggleMovSetorPendencias(${idx})">${e.pendencias.length} pendência(s) <i class="fas fa-chevron-down ml-1"></i></span>`;
+            }
+            if (e.bloqueado) {
+                badge += ` <span class="bg-red-100 text-red-700 text-xs font-bold px-2 py-1 rounded-full ml-1"><i class="fas fa-lock mr-1"></i>Bloqueado</span>`;
+            }
+
+            // Alterna entre "Bloquear" (link ainda editável pelo gestor) e
+            // "Liberar" (link travado ou já respondido, pra permitir responder/editar de novo).
+            const acaoBloqueio = e.bloqueado
+                ? `<button type="button" onclick="window.liberarMovimentacao(${e.id})" class="text-green-600 hover:underline text-xs font-bold mr-3" title="Liberar para edição">
+                        <i class="fas fa-unlock"></i> Liberar
+                    </button>`
+                : `<button type="button" onclick="window.bloquearMovimentacao(${e.id})" class="text-amber-600 hover:underline text-xs font-bold mr-3" title="Bloquear edição">
+                        <i class="fas fa-lock"></i> Bloquear
+                    </button>`;
+
+            // Um envio que o gestor já respondeu (status diferente de
+            // "aguardando") não pode mais ser excluído por aqui - a resposta já
+            // registrada (aviso pro DP) seria perdida. O backend também recusa
+            // esse caso (defesa em profundidade); aqui é só pra já não oferecer
+            // o botão. Use "Bloquear" pra travar o link em vez de excluir.
+            const acaoExcluir = e.status === 'aguardando'
+                ? `<button type="button" onclick="window.excluirMovimentacao(${e.id})" class="text-red-600 hover:underline text-xs font-bold" title="Excluir">
+                        <i class="fas fa-trash"></i> Excluir
+                    </button>`
+                : `<span class="text-gray-300 text-xs font-bold cursor-not-allowed" title="Já tem resposta do gestor registrada - não pode ser excluído. Use Bloquear.">
+                        <i class="fas fa-trash"></i> Excluir
+                    </span>`;
+
+            html += `<tr>
+                <td class="px-4 py-2 max-w-xs" title="${(e.lotacoes || []).join(', ')}">${e.nomeLotacao}</td>
+                <td class="px-4 py-2 text-sm text-gray-500 max-w-xs" title="${(e.empresas || []).join(', ')}">${e.empresa || '-'}</td>
+                <td class="px-4 py-2">${e.mesNome}/${e.ano}</td>
+                <td class="px-4 py-2 text-sm text-gray-500">${e.emailGestor}</td>
+                <td class="px-4 py-2 text-sm text-gray-500">${dataEnvio}</td>
+                <td class="px-4 py-2 text-center text-sm text-gray-500">${e.totalColaboradores ?? '-'}</td>
+                <td class="px-4 py-2">${badge}</td>
+                <td class="px-4 py-2 text-right whitespace-nowrap">
+                    <button type="button" onclick="window.reenviarMovimentacao(${e.id}, this)" class="text-sky-600 hover:underline text-xs font-bold mr-3" title="Reenviar e-mail">
+                        <i class="fas fa-paper-plane"></i> Reenviar
+                    </button>
+                    ${acaoBloqueio}
+                    ${acaoExcluir}
+                </td>
+            </tr>`;
+
+            if (e.status === 'pendencias' && e.pendencias.length > 0) {
+                html += `<tr id="movsetor-pendencia-${idx}" class="hidden bg-amber-50">
+                    <td colspan="8" class="px-4 py-3">
+                        <p class="text-xs font-bold text-amber-700 mb-2"><i class="fas fa-exclamation-triangle mr-1"></i> Aviso para o Departamento Pessoal - confira e corrija manualmente:</p>
+                        <ul class="text-sm text-gray-700 space-y-1">
+                            ${e.pendencias.map((p) => `<li><strong>${p.nome_funcionario}</strong>${p.cargo ? ` <span class="text-gray-500">(${p.cargo})</span>` : ''}${p.nomeLotacao ? ` <span class="text-sky-600">[${p.nomeLotacao}]</span>` : ''}${p.observacao ? ` - ${p.observacao}` : ' (gestor marcou pendência sem detalhar o motivo)'}</li>`).join('')}
+                        </ul>
+                    </td>
+                </tr>`;
+            }
         });
-        listHTML += '</ul></div>';
-        container.innerHTML = listHTML;
-    } catch (err) { window.showToast(err.message, 'error'); } finally { window.hideLoader(container); }
+        tbody.innerHTML = html;
+    }
+
+    if (paginationEl) {
+        const inicioExibido = filtered.length === 0 ? 0 : inicio + 1;
+        const fimExibido = Math.min(inicio + movSetorState.pageSize, filtered.length);
+        paginationEl.innerHTML = `
+            <span class="text-xs text-gray-500">Mostrando ${inicioExibido}-${fimExibido} de ${filtered.length}</span>
+            <div class="flex items-center gap-2">
+                <button type="button" onclick="window.mudarPaginaMovSetor(-1)" ${movSetorState.page <= 1 ? 'disabled' : ''} class="px-3 py-1 text-sm border border-gray-300 rounded disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50">Anterior</button>
+                <span class="text-xs text-gray-500">Página ${movSetorState.page} de ${totalPaginas}</span>
+                <button type="button" onclick="window.mudarPaginaMovSetor(1)" ${movSetorState.page >= totalPaginas ? 'disabled' : ''} class="px-3 py-1 text-sm border border-gray-300 rounded disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50">Próxima</button>
+            </div>`;
+    }
+};
+
+window.mudarPaginaMovSetor = function(delta) {
+    movSetorState.page += delta;
+    window.renderMovSetorPage();
+};
+
+// Lê os 3 selects de filtro e re-renderiza a partir da página 1 (senão a
+// página atual pode não existir mais no resultado filtrado).
+window.filtrarMovSetor = function() {
+    const empresaEl = document.getElementById('movsetor-filtro-empresa');
+    const lotacaoEl = document.getElementById('movsetor-filtro-lotacao');
+    const gestorEl = document.getElementById('movsetor-filtro-gestor');
+    movSetorState.filtroEmpresa = empresaEl ? empresaEl.value : '';
+    movSetorState.filtroLotacao = lotacaoEl ? lotacaoEl.value : '';
+    movSetorState.filtroGestor = gestorEl ? gestorEl.value : '';
+    movSetorState.page = 1;
+    window.renderMovSetorPage();
+};
+
+window.limparFiltrosMovSetor = function() {
+    const empresaEl = document.getElementById('movsetor-filtro-empresa');
+    const lotacaoEl = document.getElementById('movsetor-filtro-lotacao');
+    const gestorEl = document.getElementById('movsetor-filtro-gestor');
+    if (empresaEl) empresaEl.value = '';
+    if (lotacaoEl) lotacaoEl.value = '';
+    if (gestorEl) gestorEl.value = '';
+    window.filtrarMovSetor();
+};
+
+window.toggleMovSetorPendencias = function(idx) {
+    const row = document.getElementById(`movsetor-pendencia-${idx}`);
+    if (row) row.classList.toggle('hidden');
+};
+
+// Reenvia o e-mail de um envio já existente (mesmo link/token) - útil quando
+// o e-mail não chegou (ex.: EMAIL_USER/EMAIL_PASS mal configurados na hora do
+// disparo original). Ao contrário do disparo em lote, aqui um erro de envio
+// é mostrado na hora pro usuário, em vez de só ficar no log do servidor.
+window.reenviarMovimentacao = async function(id, buttonEl) {
+    if (buttonEl) buttonEl.disabled = true;
+    try {
+        await window.callApi(`/movimentacoes-setor/admin/envios/${id}/reenviar`, 'POST');
+        window.showToast('E-mail reenviado!', 'success');
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    } finally {
+        if (buttonEl) buttonEl.disabled = false;
+    }
+};
+
+// Remove um envio (usado pra limpar testes ou envios feitos por engano). O
+// gestor não conseguirá mais responder pelo link antigo depois disso.
+window.excluirMovimentacao = async function(id) {
+    if (!confirm('Excluir este envio? O link enviado ao gestor para de funcionar.')) return;
+    try {
+        await window.callApi(`/movimentacoes-setor/admin/envios/${id}`, 'DELETE');
+        window.showToast('Envio removido.', 'success');
+        window.loadMovimentacoesSetor();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
+};
+
+// Trava o link do gestor: mesmo que ele ainda não tenha respondido, a página
+// pública passa a recusar a resposta enquanto estiver bloqueado.
+window.bloquearMovimentacao = async function(id) {
+    try {
+        await window.callApi(`/movimentacoes-setor/admin/envios/${id}/bloquear`, 'POST');
+        window.showToast('Envio bloqueado para edição.', 'success');
+        window.loadMovimentacoesSetor();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
+};
+
+// Libera o link do gestor pra responder/editar de novo (mesmo que já tivesse
+// respondido antes - a resposta anterior fica salva e aparece pré-preenchida).
+window.liberarMovimentacao = async function(id) {
+    try {
+        await window.callApi(`/movimentacoes-setor/admin/envios/${id}/liberar`, 'POST');
+        window.showToast('Envio liberado para edição.', 'success');
+        window.loadMovimentacoesSetor();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
+};
+
+window.enviarMovimentacoesDoMes = async function() {
+    const mes = document.getElementById('movsetor-mes').value;
+    const ano = document.getElementById('movsetor-ano').value;
+    try {
+        const resultado = await window.callApi('/movimentacoes-setor/admin/enviar', 'POST', { ano, mes });
+
+        // Diagnóstico: se não tem NENHUM gestor cadastrado, o problema não é o
+        // mês escolhido - é que a tabela de gestores está vazia. Avisa isso
+        // primeiro e não deixa cair na mensagem genérica "nenhum e-mail novo",
+        // que confundia (parecia que o mês/período estava errado).
+        if (resultado.totalGestoresCadastrados === 0) {
+            window.showToast('Nenhum e-mail de gestor cadastrado ainda. Cadastre em Cadastros > Lotações (campo "e-mail do gestor" + botão Salvar) e tente de novo.', 'error');
+            return;
+        }
+
+        const partes = [];
+        if (resultado.criados > 0) partes.push(`${resultado.criados} e-mail(s) enviado(s)`);
+        if (resultado.ignoradosJaExistiam > 0) partes.push(`${resultado.ignoradosJaExistiam} já tinham sido enviados`);
+        if (resultado.semDadosDeFolha > 0) partes.push(`${resultado.semDadosDeFolha} sem dados de folha nesse período`);
+        if (resultado.erros && resultado.erros.length > 0) partes.push(`${resultado.erros.length} com erro (veja o console do servidor)`);
+
+        if (partes.length === 0) {
+            window.showToast(`Nenhum e-mail novo para enviar (${resultado.totalGestoresCadastrados} gestor(es) cadastrado(s), mas nenhum se encaixou - confira o console do servidor).`, 'error');
+        } else {
+            const temErro = resultado.erros && resultado.erros.length > 0;
+            window.showToast(partes.join(' - '), temErro ? 'error' : 'success');
+        }
+        window.loadMovimentacoesSetor();
+    } catch (err) {
+        window.showToast(err.message, 'error');
+    }
 };
 
 window.loadCCData = async function() {
@@ -494,55 +1393,101 @@ window.saveLancamentos = async function(event) {
 
 // INICIALIZAÇÃO GERAL
 document.addEventListener('DOMContentLoaded', () => {
-    
-    // --- INÍCIO DO CÓDIGO NOVO (VERIFICAÇÃO DE ADMIN) ---
-    // Coloque isto EXATAMENTE AQUI, na primeira linha dentro do listener
-    const userData = JSON.parse(localStorage.getItem('user') || '{}');
-    
-    // Verifica se é admin (aceita 1 ou true)
-    const isAdmin = userData.is_admin === 1 || userData.is_admin === true;
 
-    // Se NÃO for admin, esconde o menu e bloqueia o acesso
-    if (!isAdmin) {
-        // 1. Esconde o link no menu
-        const userMenuLink = document.querySelector('a[data-view="cadastros-usuarios"]');
-        if (userMenuLink) {
-            // Esconde o <li> pai do link
-            userMenuLink.parentElement.style.display = 'none'; 
-        }
-        
-        // 2. Protege a função de navegação (Monkey Patching)
-        const originalSwitchView = window.switchView;
-        window.switchView = function(viewId) {
-            if (viewId === 'cadastros-usuarios' && !isAdmin) {
-                window.showToast('Acesso negado. Apenas administradores.', 'error');
-                return;
-            }
-            originalSwitchView(viewId);
-        }
+    // Esconde do menu tudo que este usuário não tem permissão de ver
+    // (cadastros/relatórios/lançamentos conforme menus_permitidos, itens de
+    // relatório conforme relatorios_permitidos, e "Usuários" só para admin).
+    // A checagem real de acesso acontece em switchView/showReport - isto aqui
+    // é só para não mostrar links que vão dar "Acesso Bloqueado" ao clicar.
+    window.applyMenuPermissionsToNav();
+
+    // Carregar view inicial — se a URL já traz um menu (ex.: #/relatorios/custo-folha),
+    // restaura essa tela; senão abre o Início.
+    if (location.hash && location.hash.length > 2) {
+        window.applyHashRoute();
+    } else {
+        window.switchView('inicio');
     }
-    // Carregar view inicial
-    window.switchView('inicio');
+
+    // Voltar/avançar do navegador ou URL editada pelo usuário: re-navega.
+    // Mudanças feitas pela própria navegação são ignoradas (flag _hashInterno).
+    window.addEventListener('hashchange', () => {
+        if (window._hashInterno) { window._hashInterno = false; return; }
+        window.applyHashRoute();
+    });
     
     // Event listener navegação
-    document.querySelector('header').addEventListener('click', (e) => {
-        const targetLink = e.target.closest('a');
-        if (!targetLink) return;
-        const viewId = targetLink.dataset.view;
-        const reportType = targetLink.dataset.reportType;
-        
-        e.preventDefault();
-        if (viewId === 'movimentos') { window.showToast('Desabilitado.', 'error'); return; }
-        
-        if (targetLink.id === 'about-link') { /* ... */ } 
-        else if (targetLink.id === 'ai-analysis-link') { /* ... */ } 
-        else if (reportType) { window.switchView('relatorios'); window.showReport(reportType); } 
-        else if (viewId) { window.switchView(viewId); }
-    });
+    const header = document.querySelector('header');
+    if (header) {
+        header.addEventListener('click', (e) => {
+            const targetLink = e.target.closest('a');
+            if (!targetLink) return;
+            
+            const viewId = targetLink.dataset.view;
+            const reportType = targetLink.dataset.reportType;
+            
+            e.preventDefault(); // Previne comportamento padrão de links
+            
+            if (viewId === 'movimentos') { 
+                if(window.showToast) window.showToast('Desabilitado.', 'error'); 
+                return; 
+            }
+            
+            if (targetLink.id === 'about-link') {
+                // Se tiver modal de sobre, chame aqui
+            }
+            else if (reportType) {
+                if(window.switchView) window.switchView('relatorios'); 
+                if(window.showReport) window.showReport(reportType); 
+            } 
+            else if (viewId) { 
+                if(window.switchView) window.switchView(viewId); 
+            }
+        });
+    }
 
-    // Event listener global para todos os botões de expandir/recolher
-    document.body.addEventListener('click', function(event) {
-        const header = event.target.closest('.collapsible-header');
+     // --- 2. LISTENER GLOBAL (BOTÕES DENTRO DE MODAIS E ACORDEÕES) ---
+    // --- GERENCIADOR DE CLIQUES CENTRALIZADO ---
+    document.body.addEventListener('click', (e) => {
+        
+        // 1. FECHAR MODAIS (Classe .close-modal-btn ou botão "Fechar" azul)
+        // Verifica se clicou no botão ou em algum ícone dentro dele
+        const closeBtn = e.target.closest('.close-modal-btn, .modal-close-action'); 
+        // Nota: Adicionei .modal-close-action caso você queira usar essa classe no botão azul "Fechar"
+        
+        // Verifica se clicou no botão "Fechar" específico do rodapé (se ele não tiver a classe acima)
+        const isFooterCloseBtn = e.target.innerText.trim() === 'Fechar';
+
+        if (closeBtn || (e.target.tagName === 'BUTTON' && isFooterCloseBtn)) {
+            e.preventDefault();
+            console.log("Fechando modais...");
+            document.querySelectorAll('.modal-container').forEach(m => {
+                m.classList.add('hidden');
+                m.style.display = 'none'; // Força o fechamento
+            });
+            return; // Para a execução aqui
+        }
+
+        // 2. NAVEGAÇÃO (Links com data-view)
+        // BUG CORRIGIDO: o <header> já tem seu próprio listener de clique (mais
+        // acima) que trata os links de navegação (inclusive casos especiais como
+        // reportType, about-link). Como esse listener global
+        // aqui embaixo também escuta cliques em [data-view], um clique dentro do
+        // header disparava switchView() DUAS VEZES (uma vez por listener) - daí
+        // telas com consulta pesada, como Lotações, apareciam com a requisição
+        // rodando (e demorando) duas vezes seguidas. Fora do header (ex.: o link
+        // "Voltar para o Início" da tela de Acesso Bloqueado) continua funcionando
+        // normalmente, só não trata de novo o que já foi tratado ali em cima.
+        const navLink = e.target.closest('[data-view]');
+        if (navLink) {
+            if (navLink.closest('header')) return;
+            e.preventDefault();
+            window.switchView(navLink.dataset.view);
+            return;
+        }
+        
+        // 5. ACORDEÕES (Collapsible)
+        const header = e.target.closest('.collapsible-header');
         if (header) {
             window.toggleCollapsible(header);
         }

@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Movimentação de Setor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* Mesma paleta usada no menu Início (frontend/index.html), pra manter
+           a identidade visual da Tijuca também nas páginas públicas (sem
+           login) enviadas por e-mail ao gestor. */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        :root {
+            --tijuca-blue: #002060;
+            --tijuca-yellow: #FFC000;
+            --tijuca-blue-hover: #003087;
+        }
+        .btn-tijuca { background-color: var(--tijuca-blue); }
+        .btn-tijuca:hover { background-color: var(--tijuca-blue-hover); }
+        .text-tijuca { color: var(--tijuca-blue); }
+        .hover-tijuca:hover { color: var(--tijuca-blue); }
+        .card-accent { border-top: 4px solid var(--tijuca-blue); }
+        .card-tijuca { background-color: var(--tijuca-blue); }
+        .card-tijuca .card-tijuca-label { color: var(--tijuca-yellow); opacity: 0.85; }
+        .card-tijuca .card-tijuca-valor { color: var(--tijuca-yellow); }
+
+        /* Cabeçalho de cada setor na lista de colaboradores: mesmo padrão
+           azul/amarelo dos cards de resumo acima. */
+        .setor-header { background-color: var(--tijuca-blue); }
+        .setor-header .setor-header-nome { color: #FFFFFF; }
+
+        /* Rodapé de cada setor (depois do último colaborador da lista):
+           subtotal de proventos/descontos/líquido daquele setor, mesmo
+           padrão azul/amarelo do cabeçalho. */
+        .setor-footer { background-color: var(--tijuca-blue); }
+        .setor-footer .setor-footer-label { color: #FFFFFF; opacity: 0.85; }
+        .setor-footer .setor-footer-valor { color: var(--tijuca-yellow); }
+
+        /* Quebra de página: cada setor começa numa página nova ao imprimir/
+           exportar em PDF (ex.: Ctrl+P no navegador). O primeiro setor fica
+           na mesma página que o resumo geral - só os seguintes quebram.
+           -webkit-print-color-adjust/print-color-adjust garantem que o azul/
+           amarelo do cabeçalho não suma na impressão (por padrão, navegadores
+           costumam remover cor de fundo ao imprimir). */
+        .setor-quebra-pagina { break-before: page; page-break-before: always; }
+        @media print {
+            * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+
+    <header class="bg-white shadow-md">
+        <div class="container mx-auto px-4 py-3 flex items-center gap-3">
+            <img src="https://i.postimg.cc/c4m065zS/logo-Tijuca.png" alt="Logótipo da Empresa" class="h-10">
+            <h1 class="text-2xl font-bold text-gray-700">Folha de Pagamento</h1>
+        </div>
+    </header>
+
+    <div class="flex items-start justify-center py-10 px-4">
+    <div class="bg-white rounded-xl shadow-lg max-w-3xl w-full p-6 md:p-8 card-accent">
+
+        <div id="loading-state" class="text-center py-10 text-gray-500">
+            <i class="fas fa-spinner fa-spin"></i> Carregando...
+        </div>
+
+        <div id="error-state" class="hidden text-center py-10">
+            <p class="text-red-600 font-bold" id="error-message">Não foi possível carregar esta página.</p>
+        </div>
+
+        <div id="content-state" class="hidden">
+            <h2 class="text-2xl font-bold text-tijuca mb-1">Movimentação de Setor</h2>
+            <p class="text-gray-500 mb-6">Competência <strong id="info-competencia"></strong> - <strong id="info-total-lotacoes"></strong> setor(es) - <strong id="info-total-colaboradores"></strong> colaborador(es)</p>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div class="card-tijuca p-4 rounded-lg text-center">
+                    <div class="card-tijuca-label text-xs font-bold uppercase mb-1">Proventos</div>
+                    <div class="card-tijuca-valor text-lg font-bold" id="info-proventos"></div>
+                </div>
+                <div class="card-tijuca p-4 rounded-lg text-center">
+                    <div class="card-tijuca-label text-xs font-bold uppercase mb-1">Descontos</div>
+                    <div class="card-tijuca-valor text-lg font-bold" id="info-descontos"></div>
+                </div>
+                <div class="card-tijuca p-4 rounded-lg text-center">
+                    <div class="card-tijuca-label text-xs font-bold uppercase mb-1">Líquido</div>
+                    <div class="card-tijuca-valor text-lg font-bold" id="info-liquido"></div>
+                </div>
+            </div>
+
+            <div id="bloqueado-aviso" class="hidden bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg p-4 mb-6">
+                <i class="fas fa-lock mr-1"></i> Este link foi bloqueado. Fale com o RH se precisar enviar uma resposta.
+            </div>
+
+            <div id="ja-respondido-aviso" class="hidden bg-sky-50 border border-sky-200 text-sky-800 text-sm rounded-lg p-4 mb-6">
+                Você já enviou sua resposta para esta movimentação<span id="info-data-resposta-wrap"> em <strong id="info-data-resposta"></strong></span>. Abaixo está o que foi registrado.
+            </div>
+
+            <div id="expirado-aviso" class="hidden bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg p-4 mb-6">
+                Este link expirou. Se ainda precisar reportar algo sobre este setor, fale com o RH para receber um novo link.
+            </div>
+
+            <p class="text-gray-700 mb-3">Confira a lista de colaboradores dos seus setores. <strong>Clique no nome do colaborador</strong> para marcar Transferência de Setor e/ou Mudança de Cargo, se for o caso:</p>
+
+            <div id="colaboradores-list" class="divide-y divide-gray-200 border rounded-lg mb-6"></div>
+
+            <div class="flex justify-end">
+                <button id="btn-enviar" type="button" class="btn-tijuca text-white font-bold px-6 py-3 rounded-lg shadow disabled:opacity-50 disabled:cursor-not-allowed">
+                    <i class="fas fa-check mr-2"></i> Enviar Resposta
+                </button>
+            </div>
+
+            <p id="submit-message" class="mt-4 text-center text-sm font-bold"></p>
+        </div>
+    </div>
+    </div>
+
+    <!-- Sugestões de autocomplete (via atributo "list") pros campos "Para
+         qual setor foi transferido?" e "Qual o novo cargo?" - preenchidas em
+         carregarOpcoes() com os cargos/setores já existentes no Fortes. -->
+    <datalist id="lista-setores"></datalist>
+    <datalist id="lista-cargos"></datalist>
+
+    <script>
+        // Mesmo endereço já usado em reset-password.html - ajuste se o servidor mudar de IP.
+        const API_URL = 'http://localhost:8010';
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const token = urlParams.get('token');
+
+        const loadingState = document.getElementById('loading-state');
+        const errorState = document.getElementById('error-state');
+        const contentState = document.getElementById('content-state');
+        const btnEnviar = document.getElementById('btn-enviar');
+
+        function showError(message) {
+            loadingState.classList.add('hidden');
+            contentState.classList.add('hidden');
+            errorState.classList.remove('hidden');
+            document.getElementById('error-message').textContent = message;
+        }
+
+        function fmtMoeda(v) {
+            return 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        let dadosEnvio = null;
+
+        async function carregar() {
+            if (!token) {
+                showError('Link inválido: token não informado na URL.');
+                return;
+            }
+            // Dispara em paralelo, sem "await" - é só sugestão de autocomplete,
+            // não deve atrasar nem travar o carregamento da página principal
+            // se o Data Warehouse estiver lento/fora do ar.
+            carregarOpcoes();
+            try {
+                const res = await fetch(`${API_URL}/movimentacoes-setor/responder/${token}`);
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showError(data.message || 'Não foi possível carregar esta movimentação.');
+                    return;
+                }
+
+                dadosEnvio = data;
+                renderizar(data);
+            } catch (err) {
+                showError('Erro ao conectar ao servidor. Tente novamente mais tarde.');
+            }
+        }
+
+        // Carrega a lista de cargos/setores já existentes no Fortes pra
+        // preencher os <datalist> de autocomplete dos campos "Para qual setor
+        // foi transferido?"/"Qual o novo cargo?". Só um "nice to have": se
+        // falhar, os campos continuam funcionando normalmente como texto livre.
+        async function carregarOpcoes() {
+            try {
+                const res = await fetch(`${API_URL}/movimentacoes-setor/opcoes`);
+                if (!res.ok) return;
+                const data = await res.json();
+                preencherDatalist('lista-setores', data.lotacoes || []);
+                preencherDatalist('lista-cargos', data.cargos || []);
+            } catch (err) {
+                // Silencioso de propósito - ver comentário acima.
+            }
+        }
+
+        function preencherDatalist(id, valores) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.innerHTML = valores.map((v) => `<option value="${escapeAtributoHtml(v)}"></option>`).join('');
+        }
+
+        // Abre/fecha o painel de opções (Transferência de Setor / Mudança de
+        // Cargo) de um colaborador ao clicar no nome. Em modo somente leitura
+        // (já respondido/expirado/bloqueado) não faz nada.
+        window.toggleColabObs = function(nameEl) {
+            const row = nameEl.closest('[data-id-funcionario]');
+            if (row.dataset.somenteLeitura === '1') return;
+            const painel = row.querySelector('.colab-painel');
+            painel.classList.toggle('hidden');
+        };
+
+        // Interpreta o texto salvo em "observacao" no formato estruturado que
+        // este formulário gera ("Transferência de Setor: X | Mudança de
+        // Cargo: Y"), pra pré-marcar os checkboxes quando o envio é reaberto
+        // pra edição (ex.: botão "Liberar" na tela de admin). Se o texto não
+        // bater com esse padrão - por exemplo, uma observação antiga, salva
+        // como texto livre antes desta mudança - nenhum checkbox é marcado e
+        // o texto original fica preservado em "bruto" pra ainda ser exibido.
+        function parseObservacaoEstruturada(obs) {
+            const resultado = { transferencia: false, novoSetor: '', mudancaCargo: false, novoCargo: '', bruto: obs || '', reconhecido: false };
+            if (!obs) return resultado;
+            obs.split(' | ').forEach((parte) => {
+                const mTransf = parte.match(/^Transferência de Setor: (.*)$/);
+                const mCargo = parte.match(/^Mudança de Cargo: (.*)$/);
+                if (mTransf) {
+                    resultado.transferencia = true;
+                    resultado.novoSetor = mTransf[1] === '(não informado)' ? '' : mTransf[1];
+                    resultado.reconhecido = true;
+                } else if (mCargo) {
+                    resultado.mudancaCargo = true;
+                    resultado.novoCargo = mCargo[1] === '(não informado)' ? '' : mCargo[1];
+                    resultado.reconhecido = true;
+                }
+            });
+            return resultado;
+        }
+
+        function escapeAtributoHtml(texto) {
+            return String(texto || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        }
+
+        // Monta o painel com os 2 checkboxes e os campos de preenchimento que
+        // aparecem ao marcar cada um - em vez de um campo de texto livre, que
+        // dificultava o DP entender o motivo real da pendência.
+        function renderPainelColab(parsed, somenteLeitura, idSuffix) {
+            const dis = somenteLeitura ? 'disabled' : '';
+            const avisoLegado = (!parsed.reconhecido && parsed.bruto)
+                ? `<p class="text-xs text-gray-500 italic mb-2">Observação anterior: "${escapeAtributoHtml(parsed.bruto)}"</p>`
+                : '';
+            return `
+                ${avisoLegado}
+                <div class="mb-2">
+                    <label class="flex items-center gap-2 text-sm text-gray-700 ${somenteLeitura ? '' : 'cursor-pointer'}">
+                        <input type="checkbox" id="chk-transf-${idSuffix}" ${parsed.transferencia ? 'checked' : ''} ${dis}
+                            onchange="document.getElementById('campo-transf-${idSuffix}').classList.toggle('hidden', !this.checked)">
+                        Transferência de Setor
+                    </label>
+                    <input type="text" id="campo-transf-${idSuffix}" list="lista-setores" class="mt-1 border border-gray-300 rounded px-3 py-2 text-sm w-full ${parsed.transferencia ? '' : 'hidden'}"
+                        placeholder="Para qual setor foi transferido?" value="${escapeAtributoHtml(parsed.novoSetor)}" ${dis}>
+                </div>
+                <div>
+                    <label class="flex items-center gap-2 text-sm text-gray-700 ${somenteLeitura ? '' : 'cursor-pointer'}">
+                        <input type="checkbox" id="chk-cargo-${idSuffix}" ${parsed.mudancaCargo ? 'checked' : ''} ${dis}
+                            onchange="document.getElementById('campo-cargo-${idSuffix}').classList.toggle('hidden', !this.checked)">
+                        Mudança de Cargo
+                    </label>
+                    <input type="text" id="campo-cargo-${idSuffix}" list="lista-cargos" class="mt-1 border border-gray-300 rounded px-3 py-2 text-sm w-full ${parsed.mudancaCargo ? '' : 'hidden'}"
+                        placeholder="Qual o novo cargo?" value="${escapeAtributoHtml(parsed.novoCargo)}" ${dis}>
+                </div>
+            `;
+        }
+
+        function renderizar(data) {
+            loadingState.classList.add('hidden');
+            contentState.classList.remove('hidden');
+
+            document.getElementById('info-competencia').textContent = `${data.mesNome}/${data.ano}`;
+            document.getElementById('info-total-lotacoes').textContent = (data.lotacoes || []).length;
+            document.getElementById('info-total-colaboradores').textContent = data.totalColaboradores ?? 0;
+            document.getElementById('info-proventos').textContent = fmtMoeda(data.valorProventos);
+            document.getElementById('info-descontos').textContent = fmtMoeda(data.valorDescontos);
+            document.getElementById('info-liquido').textContent = fmtMoeda(data.valorLiquido);
+
+            const listEl = document.getElementById('colaboradores-list');
+            listEl.innerHTML = '';
+
+            // Bloqueado tem prioridade sobre os outros estados - nem mostra o
+            // formulário de resposta, só o aviso.
+            const somenteLeitura = data.bloqueado || data.jaRespondido || data.expirado;
+
+            // Um envio agora pode reunir vários setores do mesmo gestor -
+            // renderiza um cabeçalho por lotação e, dentro dele, os
+            // colaboradores daquele setor (data.lotacoes vem agrupado assim
+            // do backend).
+            (data.lotacoes || []).forEach((grupo, indiceGrupo) => {
+                // Subtotal do setor (proventos/descontos/líquido). Descontos e
+                // líquido podem vir null em envios antigos onde só o proventos
+                // por colaborador ficou salvo - nesse caso só mostra proventos.
+                const partesSubtotal = [`Proventos: ${fmtMoeda(grupo.subtotalProventos || 0)}`];
+                if (grupo.subtotalDescontos !== null && grupo.subtotalDescontos !== undefined) {
+                    partesSubtotal.push(`Descontos: ${fmtMoeda(grupo.subtotalDescontos)}`);
+                }
+                if (grupo.subtotalLiquido !== null && grupo.subtotalLiquido !== undefined) {
+                    partesSubtotal.push(`Líquido: ${fmtMoeda(grupo.subtotalLiquido)}`);
+                }
+
+                // Quebra de página a partir do 2º setor em diante (o 1º fica
+                // junto do resumo geral no topo da página 1).
+                const header = document.createElement('div');
+                header.className = `setor-header px-4 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1${indiceGrupo > 0 ? ' setor-quebra-pagina' : ''}`;
+                const nomeSetor = grupo.empresa ? `${grupo.nomeLotacao} - ${grupo.empresa}` : grupo.nomeLotacao;
+                const qtdColaboradores = grupo.colaboradores.length;
+                header.innerHTML = `
+                    <span class="setor-header-nome font-bold text-sm">${nomeSetor} <span class="font-normal opacity-80">(${qtdColaboradores} colaborador${qtdColaboradores === 1 ? '' : 'es'})</span></span>
+                `;
+                listEl.appendChild(header);
+
+                grupo.colaboradores.forEach((c, indiceColab) => {
+                    const idSuffix = `${indiceGrupo}-${indiceColab}`;
+                    const row = document.createElement('div');
+                    row.className = 'p-4';
+                    row.dataset.idFuncionario = c.id_funcionario || '';
+                    row.dataset.idSuffix = idSuffix;
+                    row.dataset.somenteLeitura = somenteLeitura ? '1' : '0';
+
+                    const parsed = parseObservacaoEstruturada(c.observacao);
+                    const temObs = !!(c.observacao && c.observacao.trim());
+                    // Em modo edição, só abre o painel se já tinha algo marcado
+                    // antes (ex.: reenvio/edição liberada pelo RH). Em modo
+                    // leitura, só mostra o painel se realmente tiver resposta.
+                    const mostrarPainelAberto = temObs;
+                    const clicavel = !somenteLeitura;
+
+                    row.innerHTML = `
+                        <div class="flex items-center justify-between gap-4 ${clicavel ? 'cursor-pointer' : ''}" ${clicavel ? 'onclick="window.toggleColabObs(this)"' : ''}>
+                            <span class="flex flex-col">
+                                <span class="font-medium text-gray-800 ${clicavel ? 'hover-tijuca' : ''}">${c.nome_funcionario || '(sem nome)'}</span>
+                                ${c.cargo ? `<span class="text-xs text-gray-400">${c.cargo}</span>` : ''}
+                            </span>
+                            <span class="text-sm text-gray-500 font-mono whitespace-nowrap">${fmtMoeda(c.proventos)}</span>
+                        </div>
+                        <div class="colab-painel mt-3 ${mostrarPainelAberto ? '' : 'hidden'}">
+                            ${renderPainelColab(parsed, somenteLeitura, idSuffix)}
+                        </div>
+                    `;
+
+                    listEl.appendChild(row);
+                });
+
+                // Rodapé do setor: subtotal de proventos/descontos/líquido
+                // daquele grupo, depois do último colaborador da lista.
+                const footer = document.createElement('div');
+                footer.className = 'setor-footer px-4 py-3 flex flex-wrap items-center justify-end gap-x-6 gap-y-1';
+                footer.innerHTML = `
+                    <span class="setor-footer-label text-xs font-semibold uppercase mr-auto">Subtotal do setor</span>
+                    <span class="setor-footer-valor text-xs font-mono font-bold">${partesSubtotal.join('&nbsp;&nbsp;&middot;&nbsp;&nbsp;')}</span>
+                `;
+                listEl.appendChild(footer);
+            });
+
+            if (data.bloqueado) {
+                document.getElementById('bloqueado-aviso').classList.remove('hidden');
+                btnEnviar.classList.add('hidden');
+            } else if (data.jaRespondido) {
+                document.getElementById('ja-respondido-aviso').classList.remove('hidden');
+                if (data.dataResposta) {
+                    document.getElementById('info-data-resposta').textContent = new Date(data.dataResposta).toLocaleDateString('pt-BR');
+                } else {
+                    document.getElementById('info-data-resposta-wrap').classList.add('hidden');
+                }
+                btnEnviar.classList.add('hidden');
+            } else if (data.expirado) {
+                document.getElementById('expirado-aviso').classList.remove('hidden');
+                btnEnviar.classList.add('hidden');
+            }
+        }
+
+        btnEnviar.addEventListener('click', async () => {
+            // Usa o atributo data-id-funcionario (não mais ">div" direto),
+            // já que as linhas agora ficam aninhadas dentro de grupos por
+            // lotação, não mais como filhas diretas de #colaboradores-list.
+            const rows = document.querySelectorAll('#colaboradores-list [data-id-funcionario]');
+            const colaboradores = Array.from(rows).map((row) => {
+                const idSuffix = row.dataset.idSuffix;
+                const chkTransf = document.getElementById(`chk-transf-${idSuffix}`);
+                const campoTransf = document.getElementById(`campo-transf-${idSuffix}`);
+                const chkCargo = document.getElementById(`chk-cargo-${idSuffix}`);
+                const campoCargo = document.getElementById(`campo-cargo-${idSuffix}`);
+
+                const transferencia = !!(chkTransf && chkTransf.checked);
+                const mudancaCargo = !!(chkCargo && chkCargo.checked);
+
+                // Monta a observação num formato estruturado e previsível
+                // ("Transferência de Setor: X | Mudança de Cargo: Y") em vez
+                // de deixar o gestor digitar texto livre - fica mais fácil
+                // pro DP entender o motivo real de cada pendência.
+                const partesObs = [];
+                if (transferencia) partesObs.push(`Transferência de Setor: ${(campoTransf && campoTransf.value.trim()) || '(não informado)'}`);
+                if (mudancaCargo) partesObs.push(`Mudança de Cargo: ${(campoCargo && campoCargo.value.trim()) || '(não informado)'}`);
+
+                return {
+                    id_funcionario: row.dataset.idFuncionario,
+                    // Ter marcado algum dos 2 checkboxes é o que sinaliza a pendência.
+                    fora_setor: transferencia || mudancaCargo,
+                    observacao: partesObs.join(' | ')
+                };
+            });
+
+            const msgEl = document.getElementById('submit-message');
+            btnEnviar.disabled = true;
+            msgEl.className = 'mt-4 text-center text-sm font-bold text-gray-500';
+            msgEl.textContent = 'Enviando...';
+
+            try {
+                const res = await fetch(`${API_URL}/movimentacoes-setor/responder/${token}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ colaboradores })
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    msgEl.className = 'mt-4 text-center text-sm font-bold text-red-500';
+                    msgEl.textContent = data.message || 'Erro ao enviar resposta.';
+                    btnEnviar.disabled = false;
+                    return;
+                }
+
+                msgEl.className = 'mt-4 text-center text-sm font-bold text-green-600';
+                msgEl.textContent = 'Resposta enviada com sucesso! Obrigado.';
+                btnEnviar.classList.add('hidden');
+                document.querySelectorAll('.colab-painel input').forEach((el) => { el.disabled = true; });
+                document.querySelectorAll('[data-id-funcionario]').forEach((el) => { el.dataset.somenteLeitura = '1'; });
+            } catch (err) {
+                msgEl.className = 'mt-4 text-center text-sm font-bold text-red-500';
+                msgEl.textContent = 'Erro ao conectar ao servidor.';
+                btnEnviar.disabled = false;
+            }
+        });
+
+        carregar();
+    </script>
+</body>
+</html>

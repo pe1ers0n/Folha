@@ -147,3 +147,17 @@ CREATE INDEX IF NOT EXISTS idx_f_pag_id_estabelecimento ON gold.f_fortes_pagamen
 CREATE INDEX IF NOT EXISTS idx_f_pag_id_cargo ON gold.f_fortes_pagamento(id_cargo);
 CREATE INDEX IF NOT EXISTS idx_f_pag_id_lotacao ON gold.f_fortes_pagamento(id_lotacao);
 CREATE INDEX IF NOT EXISTS idx_f_pag_data ON gold.f_fortes_pagamento(data);
+
+-- --- RECOMENDAÇÃO DE PERFORMANCE (rodar manualmente, tabela não criada por este script) ---
+-- A tabela gold.d_protheus_centro_custo é usada em praticamente todos os filtros de
+-- Dashboard/Relatórios (buildWhereClause em routes.js) através de um self-join que
+-- calcula o "centro de custo pai" a partir dos 3 primeiros dígitos do id (LEFT(id::text,3)).
+-- Essa comparação não usa índice normal por ser baseada em uma expressão. Se a tabela
+-- for grande e as consultas de filtro continuarem lentas mesmo com o cache de
+-- aplicação (routes.js), considere criar um índice funcional, por exemplo:
+--
+--   CREATE INDEX IF NOT EXISTS idx_cc_id_prefixo3
+--       ON gold.d_protheus_centro_custo (LEFT(id_centro_custo::text, 3));
+--
+-- Isso permite que o banco use índice na parte "pai.id_centro_custo::text" da comparação
+-- em vez de escanear a tabela inteira a cada execução.
